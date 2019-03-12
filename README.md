@@ -6,11 +6,21 @@ A static class wrapping the "SceneView.duringSceneGui" event to allow calling of
 ##### Currently Supports: #####
 
   Custom:
-  * DrawLabel(Vector3 position, string text, GUIStyle style = null)
+  * DrawLabel
 
   Handles:
-  * DrawSolidRectangleWithOutline(Rect rectangle, Color faceColor, Color outlineColor)
-  * DrawSolidRectangleWithOutline(Vector3[] verts, Color faceColor, Color outlineColor)
-  * DrawAAConvexPolygon(Vector3[] verts, Color color)
+  * DrawSolidRectangleWithOutline
+  * DrawAAConvexPolygon
+  * DrawSphere
+  * DrawDottedLine
+  * DrawDottedWireCube
+  
+  Debug:
+  * DrawArrow
+  * DrawLine
+  * DrawPoint
+  * DrawCircle
+  * DrawCone
+  * DrawWireCube
 
 ... and is easily extensible to other methods you might need.
