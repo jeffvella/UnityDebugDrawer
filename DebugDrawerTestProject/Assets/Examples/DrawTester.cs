@@ -60,7 +60,7 @@ public class DrawTester : MonoBehaviour
         //{
         //    try
         //    {
-        //        DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods);
+        //        DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
         //    }
         //    catch (Exception ex)
         //    {
