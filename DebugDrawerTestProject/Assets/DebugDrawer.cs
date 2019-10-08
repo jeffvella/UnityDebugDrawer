@@ -39,7 +39,6 @@ namespace Vella.Common
         DottedLine,
         DottedWireCube,
         Label,
-        Arrow,
         Log,
         WireCube
     }
@@ -88,7 +87,6 @@ namespace Vella.Common
         [InitializeOnLoadMethod]
         static void OnRuntimeMethodLoad()
         {
-            NativeDebugSharedData.Stream.Allocate(NativeDebugSharedData.MaxCount, Allocator.Persistent);
             SceneView.duringSceneGui += SceneViewOnDuringSceneGui;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
@@ -113,7 +111,6 @@ namespace Vella.Common
             {
                 case PlayModeStateChange.ExitingEditMode:
                 case PlayModeStateChange.ExitingPlayMode:
-                    
                     NativeDebugSharedData.State.IsTransitioning = true;
                     break;
 
@@ -445,7 +442,7 @@ namespace Vella.Common
             {
                 Type = DebugDrawingType.Polygon,
                 Color = color ?? DefaultColor,
-                Verts = (float3*)localPoints.GetUnsafeReadOnlyPtr(),
+                Verts = (float3*)localPoints.GetUnsafePtr(),
                 Count = localPoints.Length,
                 Offset = offset,
             });
@@ -1242,19 +1239,19 @@ namespace Vella.Common
         public NativeStream Last;
         public int Count;
 
-        public NativeStreamRotation(int size, Allocator allocator) : this()
-        {
-            Allocate(size, allocator);
-        }
+        //public NativeStreamRotation(int size, Allocator allocator) : this()
+        //{
+        //    Allocate(size, allocator); 
+        //}
 
-        public void Allocate(int size, Allocator allocator)
-        {
-            Current = new NativeStream(size, allocator);
-            Next = new NativeStream(size, allocator);
-            Last = new NativeStream(size, allocator);
-            Writer = Current.AsWriter();
-            Reader = Current.AsReader();
-        }
+        //public void Allocate(int size, Allocator allocator)
+        //{
+        //    Current = new NativeStream(size, allocator);
+        //    Next = new NativeStream(size, allocator);
+        //    Last = new NativeStream(size, allocator);
+        //    Writer = Current.AsWriter();
+        //    Reader = Current.AsReader();
+        //}
 
         public int GetIndex()
         {
@@ -1266,16 +1263,21 @@ namespace Vella.Common
             Last = Current;
             Next.Clear();
             Count = 0;
-            Writer = Next.AsWriter();
+            Writer = Next.AsWriter(); 
             Reader = Next.AsReader();
             Current = Next;
         }
 
         public void Dispose()
         {
-            Next.Dispose();
-            Last.Dispose();
-            Current.Dispose();
+            if(Next.IsCreated)
+                Next.Dispose();
+
+            if (Last.IsCreated)
+                Last.Dispose();
+
+            if (Current.IsCreated)
+                Current.Dispose();
         }
     }
 

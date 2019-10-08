@@ -11,6 +11,7 @@ using Unity.Entities;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 using Vella.Common;
 
@@ -30,7 +31,7 @@ public class DrawTester : MonoBehaviour
 
     void Update()
     {
-        if (!Application.isPlaying && !DrawInEditMode)
+        if (!Application.isPlaying && !DrawInEditMode || _isTransitioningMode)
             return;
 
         var text = new NativeString512("MyText");
@@ -68,7 +69,6 @@ public class DrawTester : MonoBehaviour
         //});
 
         DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
-
     }
 
     [BurstCompile]
@@ -88,6 +88,33 @@ public class DrawTester : MonoBehaviour
         }
     }
 
+    public DrawTester()
+    {
+        // Fix Edit/Play transition and compilation leaks;
+        CompilationPipeline.compilationStarted += OnCompilationStarted;
+        EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+    }
+
+    private void OnPlayModeStateChanged(PlayModeStateChange obj)
+    {
+        if (obj == PlayModeStateChange.ExitingEditMode)
+        {
+            if (Hexagon.IsCreated)
+                Hexagon.Dispose();
+
+            _isTransitioningMode = true;
+        }
+        else
+        {
+            _isTransitioningMode = false;
+        }
+    }
+
+    private void OnCompilationStarted(object obj)
+    {
+        Hexagon.Dispose();
+    }
+
     private void OnEnable()
     {
         Hexagon = GenerateHexagon();
@@ -99,6 +126,7 @@ public class DrawTester : MonoBehaviour
     }
 
     public static NativeArray<float3> Hexagon;
+    private bool _isTransitioningMode;
 
     private static NativeArray<float3> GenerateHexagon(float radius = 0.5f)
     {
