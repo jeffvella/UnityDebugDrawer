@@ -15,6 +15,8 @@ Mathematics
 Entities 0.1.1+ (for NativeStream)
 Burst
 
+<img src="https://i.imgur.com/gj2kGu0.gif" target="_blank" />
+
 ##### Currently Supports: #####
 
   Custom:
