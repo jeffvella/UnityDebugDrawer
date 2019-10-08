@@ -57,7 +57,7 @@ namespace Vella.Common
             SceneView.duringSceneGui += SceneViewOnDuringSceneGui;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
-            CompilationPipeline.assemblyCompilationFinished += OnCompilationFinished; 
+            CompilationPipeline.assemblyCompilationFinished += OnCompilationFinished;
         }
 
         private static void OnCompilationStarted(object obj)
@@ -77,6 +77,7 @@ namespace Vella.Common
                 case PlayModeStateChange.ExitingEditMode:
                 case PlayModeStateChange.ExitingPlayMode:
                     NativeDebugSharedData.State.IsTransitioning = true;
+                    NativeDebugSharedData.Stream.Clear();
                     break;
 
                 case PlayModeStateChange.EnteredEditMode:
@@ -128,7 +129,8 @@ namespace Vella.Common
         {
             while (reader.RemainingItemCount > 0)
             {
-                switch (reader.Peek<DebugDrawingType>())
+                var type = reader.Peek<DebugDrawingType>();
+                switch (type)
                 {
                     case DebugDrawingType.Sphere:
                         reader.Read<Sphere>().Execute();
@@ -166,7 +168,8 @@ namespace Vella.Common
                     case DebugDrawingType.Log:
                         reader.Read<Log>().Execute();
                         break;
-                    default: throw new ArgumentOutOfRangeException();
+                    default:
+                        throw new ArgumentOutOfRangeException($"The type {type} is not valid");
                 }
             }
         }
@@ -187,15 +190,14 @@ namespace Vella.Common
 
             CheckForFrameChange();
 
-            // The only benefit of using a new AsWriter() is that it would be injected with the threadId in a job situation
-            // which isn't going to happen here so the whole per thread separation aspect of NativeStream based on threadId
-            // is not working in this context.
-            
-            // todo consider overloads that pass in a threadId + 1 for managed.
-            // Even then the only way to get rid of the interlocked count is to have separate draw loops in SceneViewOnDuringSceneGui for each thread. Reason being,
-            // NativeStream relies on jobs having a range of indices they're supposed to write in, which doesn't apply here with calls coming in from anywhere.
+            // new AsWriter() is injected with the threadId when its part of a job which isn't going to happen
+            // here so the whole per thread separation aspect of NativeStream thread safety is not working in this context.
 
-            ref var writer = ref NativeDebugSharedData.Stream.Writer;
+            // Usually in a job situation NativeStream can rely on knowing a range of indices to be written, which is not the case here.
+            // Could potentially remove the interlocked count by having separate draw loops in SceneViewOnDuringSceneGui for each thread;
+            // Using a stream per threadId + 1 for managed. Though the user would have to pass in the ThreadId manually.
+
+            var writer = NativeDebugSharedData.Stream.Current.AsWriter();
             var count = NativeDebugSharedData.Stream.GetIndex();
 
             // Just cap draw calls rather than trying to figure out if a scene view is visible
@@ -1051,7 +1053,7 @@ namespace Vella.Common
             {
                 case LogDisplayType.None: break;
                 case LogDisplayType.Info:
-                   
+
                     Debug.Log(Message + (FromJob ? "[FromJob]" : "") + $" Thread={ThreadId}");
                     break;
                 case LogDisplayType.Warning:
@@ -1272,11 +1274,11 @@ namespace Vella.Common
             // The whole thing is a bit of a disaster, and since this is an editor-only utility
             // with only one allocation i'm just turning it off.
 
-            #if ENABLE_UNITY_COLLECTIONS_CHECKS
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
             Current.DisableSentinel();
             Next.DisableSentinel();
             Last.DisableSentinel();
-            #endif
+#endif
         }
 
         public int GetIndex()
@@ -1291,9 +1293,15 @@ namespace Vella.Common
             Next = last;
             Next.Clear();
             Count = 0;
-            Writer = Next.AsWriter(); 
+            Writer = Next.AsWriter();
             Reader = Next.AsReader();
             Current = Next;
+        }
+
+        public void Clear()
+        {
+            NativeDebugSharedData.Stream.Current.Clear();
+            NativeDebugSharedData.Stream.Count = 0;
         }
 
         public void Dispose()
