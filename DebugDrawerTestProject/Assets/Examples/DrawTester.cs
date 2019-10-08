@@ -1,9 +1,14 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Unity.Jobs;
 using Unity.Burst;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
+using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using UnityEditor;
 using UnityEngine;
@@ -37,7 +42,8 @@ public class DrawTester : MonoBehaviour
                 Start = Start.transform.position,
                 End = End.transform.position,
                 Text = text,
-                Methods = DrawMethods
+                Methods = DrawMethods,
+                Polyhedron = Hexagon
 
             }.Run();
         }
@@ -49,7 +55,20 @@ public class DrawTester : MonoBehaviour
 
     private static void ManagedDraw(Vector3 start, Vector3 end, NativeString512 text, DrawingMethods methods)
     {
-        DrawTests(start, end, text, methods);
+        //Parallel.For(0, 100, (i, state) =>
+        //{
+        //    try
+        //    {
+        //        DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Debug.LogError($"Exception i={i} state={state}: {ex}");
+        //    }
+        //});
+
+        DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
+
     }
 
     [BurstCompile]
@@ -59,71 +78,103 @@ public class DrawTester : MonoBehaviour
         public Vector3 End;
         public NativeString512 Text;
         public DrawingMethods Methods;
+        public NativeArray<float3> Polyhedron;
+
+        [NativeSetThreadIndex] public int ThreadIndex;
 
         public void Execute()
         {
-            DrawTests(Start, End, Text, Methods);
+            DrawTests(ThreadIndex, Start, End, Text, Methods, Polyhedron);
         }
     }
 
-    private static void DrawTests(Vector3 start, Vector3 end, NativeString512 text, DrawingMethods methods)
+    private void OnEnable()
     {
-        var offset = Vector3.up * 0.05f + Vector3.left * 0.05f;
-        var center = start + (end - start) / 2;
+        Hexagon = GenerateHexagon();
+    }
+
+    private void OnDestroy()
+    {
+        Hexagon.Dispose();
+    }
+
+    public static NativeArray<float3> Hexagon;
+
+    private static NativeArray<float3> GenerateHexagon(float radius = 0.5f)
+    {
+        var arr = new NativeArray<float3>(6, Allocator.Persistent);
+        var a = radius * 0.5f;
+        arr[0] = new float3(radius, 0, 0);
+        arr[1] = new float3(a, 0, radius);
+        arr[2] = new float3(-a, 0, radius);
+        arr[3] = new float3(-radius, 0, 0);
+        arr[4] = new float3(-a, 0, -radius);
+        arr[5] = new float3(a, 0, -radius);
+        return arr;
+    }
+
+    private static unsafe void DrawTests(int threadIndex, float3 start, float3 end, NativeString512 text, DrawingMethods methods, NativeArray<float3> polygon)
+    {
+        float3 offset = Vector3.up * 0.05f + Vector3.left * 0.05f;
+        float3 center = (start + (end - start) / 2);
 
         if (methods.Sphere)
-            NativeDebug.DrawSphere(start, 1.5f, UnityColors.GhostDodgerBlue);
+            DebugDrawer.DrawSphere(start, 0.75f, UnityColors.GhostDodgerBlue);
 
         if (methods.RectangleWithOutline)
-            NativeDebug.DrawSolidRectangleWithOutline(new Rect(center, new Vector2(0.5f, 0.5f)), UnityColors.LightYellow, UnityColors.Yellow);
+        {
+            var size = 0.25f;
+            var points = stackalloc[]
+            {
+                center + offset + new float3(0, 0, 0),
+                center + offset + new float3(0, size, 0),
+                center + offset + new float3(0, size, size),
+                center + offset + new float3(0, 0, size)
+            };
+
+            DebugDrawer.DrawSolidRectangleWithOutline(points, UnityColors.LightYellow, UnityColors.Yellow);
+        }
 
         if (methods.Polygon)
         {
-            //NativeDebug.DrawAAConvexPolygon(new[]
-            //{
-            //    center + new Vector3(0,0.5f,0),
-            //    center - new Vector3(0,0.5f,0),
-            //    center + new Vector3(0,0.5f,0.5f),
-            //    center - new Vector3(0,0.5f,0.5f),
-
-            //}, UnityColors.LightYellow);
+            DebugDrawer.DrawAAConvexPolygon(polygon, center + (float3)Vector3.down * 0.25f, UnityColors.GhostDodgerBlue);
         }
 
         if (methods.Line)
-            NativeDebug.DrawLine(start + offset, end + offset);
+            DebugDrawer.DrawLine(start + offset, end + offset);
 
         if (methods.Ray)
-            NativeDebug.DrawRay(center, Vector3.up, UnityColors.MediumBlue);
+            DebugDrawer.DrawRay(center, Vector3.up, UnityColors.MediumBlue);
 
         if (methods.Cone)
-            NativeDebug.DrawCone(center, Vector3.up, UnityColors.DarkKhaki, 22.5f);
+            DebugDrawer.DrawCone(center + (float3)Vector3.up * 0.5f, Vector3.up, UnityColors.DarkKhaki, 22.5f);
 
         if (methods.Circle)
-            NativeDebug.DrawCircle(center, Vector3.up, 0.25f, UnityColors.AliceBlue);
+            DebugDrawer.DrawCircle(center, Vector3.up, 0.25f, UnityColors.AliceBlue);
 
         if (methods.DottedLine)
-            NativeDebug.DrawDottedLine(start, end, Color.yellow);
+            DebugDrawer.DrawDottedLine(start, end, Color.yellow);
 
         if (methods.WireCube)
-            NativeDebug.DrawWireCube(end, Vector3.one/2, Color.yellow);
+            DebugDrawer.DrawWireCube(end, Vector3.one / 2, Color.yellow);
 
         if (methods.DottedWireCube)
-            NativeDebug.DrawDottedWireCube(end, Vector3.one, Color.black);
+            DebugDrawer.DrawDottedWireCube(end, Vector3.one, Color.black);
 
         if (methods.Label)
-            NativeDebug.DrawLabel(center + -Vector3.up * 0.25f, text);
+            DebugDrawer.DrawLabel(center + (float3)Vector3.down * 0.25f, text);
 
         if (methods.Arrow)
-            NativeDebug.DrawArrow(start, Vector3.up, Color.blue);
+            DebugDrawer.DrawArrow(start + (float3)Vector3.up * 0.5f, Vector3.up, Color.blue);
 
         if (methods.Log)
-            NativeDebug.Log(text);
+            DebugDrawer.Log(threadIndex, text);
 
         if (methods.LogWarning)
-            NativeDebug.LogWarning(text);
+            DebugDrawer.LogWarning(text);
 
         if (methods.LogError)
-            NativeDebug.LogError(text);
+            DebugDrawer.LogError(text);
     }
 }
 
