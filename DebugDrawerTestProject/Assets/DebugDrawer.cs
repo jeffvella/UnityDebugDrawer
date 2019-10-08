@@ -107,10 +107,13 @@ namespace Vella.Common
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
+            Debug.Log($"{state}");
+
             switch (state)
             {
                 case PlayModeStateChange.ExitingEditMode:
                 case PlayModeStateChange.ExitingPlayMode:
+                    
                     NativeDebugSharedData.State.IsTransitioning = true;
                     break;
 
@@ -125,8 +128,6 @@ namespace Vella.Common
 
         private static void SceneViewOnDuringSceneGui(SceneView obj)
         {
-            var sw = Stopwatch.StartNew();
-
             if (NativeDebugSharedData.State.IsTransitioning)
                 return;
 
@@ -154,9 +155,6 @@ namespace Vella.Common
                     }
                 }
             }
-
-            sw.Stop();
-            Debug.Log($"Took: {sw.Elapsed.TotalMilliseconds:N4}");
         }
 
         private static void Draw(ref NativeStream.Reader reader)
