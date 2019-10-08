@@ -31,7 +31,13 @@ public class DrawTester : MonoBehaviour
 
     void Update()
     {
-        if (!Application.isPlaying && !DrawInEditMode || _isTransitioningMode)
+        if (!Application.isPlaying && !DrawInEditMode)
+            return;
+
+        if (_isTransitioningMode)
+            return;
+
+        if (Start == null || End == null)
             return;
 
         var text = new NativeString512("MyText");
@@ -100,8 +106,10 @@ public class DrawTester : MonoBehaviour
         if (obj == PlayModeStateChange.ExitingEditMode)
         {
             if (Hexagon.IsCreated)
+            {
+                Debug.Log("Disposed Hexagon"); 
                 Hexagon.Dispose();
-
+            }
             _isTransitioningMode = true;
         }
         else
@@ -112,7 +120,10 @@ public class DrawTester : MonoBehaviour
 
     private void OnCompilationStarted(object obj)
     {
-        Hexagon.Dispose();
+        if (Hexagon.IsCreated)
+        {
+            Hexagon.Dispose();
+        } 
     }
 
     private void OnEnable()
@@ -203,6 +214,9 @@ public class DrawTester : MonoBehaviour
 
         if (methods.LogError)
             DebugDrawer.LogError(text);
+
+        if (methods.Point)
+            DebugDrawer.DrawPoint(center + (float3)Vector3.forward, UnityColors.Lavender, 0.25f);
     }
 }
 
@@ -224,6 +238,7 @@ public struct DrawingMethods : ISerializationCallbackReceiver
     public bool LogWarning;
     public bool LogError;
     public bool Arrow;
+    public bool Point;
 
     [SerializeField, HideInInspector]
     private bool _saved;
@@ -259,5 +274,6 @@ public struct DrawingMethods : ISerializationCallbackReceiver
         LogWarning = false,
         LogError = false,
         Arrow = true,
+        Point = true,
     };
 }

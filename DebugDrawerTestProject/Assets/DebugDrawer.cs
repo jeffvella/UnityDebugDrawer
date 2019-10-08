@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using UnityEngine;
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Unity.Burst;
@@ -43,41 +44,6 @@ namespace Vella.Common
         WireCube
     }
 
-    public static unsafe class NativeStreamExtensions
-    {
-        public unsafe struct NativeStreamHeader
-        {
-            public NativeStream.BlockStreamData* Block;
-            public Allocator AllocatorLabel;
-        }
-
-        public static void Clear(this NativeStream stream)
-        {
-            if (!stream.IsCreated)
-                return;
-
-            var streamHeader = (NativeStreamHeader*)UnsafeUtility.AddressOf(ref stream);
-            if ((IntPtr)streamHeader->Block == IntPtr.Zero)
-                return;
-
-            int blockCount = JobsUtility.MaxJobThreadCount;
-            var blocksSize = sizeof(NativeStream.Block*) * blockCount;
-
-            long forEachAllocationSize = sizeof(NativeStream.Range) * stream.ForEachCount;
-            UnsafeUtility.MemClear(streamHeader->Block->Ranges, forEachAllocationSize);
-
-            for (int index = 0; index != streamHeader->Block->BlockCount; ++index)
-            {
-                NativeStream.Block* next;
-                for (NativeStream.Block* blockPtr = streamHeader->Block->Blocks[index]; (IntPtr)blockPtr != IntPtr.Zero; blockPtr = next)
-                {
-                    next = blockPtr->Next;
-                    UnsafeUtility.MemClear(blockPtr, blocksSize);
-                }
-            }
-        }
-    }
-
     public static class DebugDrawer
     {
         public static Color DefaultColor => UnityColors.White;
@@ -87,10 +53,11 @@ namespace Vella.Common
         [InitializeOnLoadMethod]
         static void OnRuntimeMethodLoad()
         {
+            NativeDebugSharedData.Stream = new NativeStreamRotation(100, Allocator.Persistent);
             SceneView.duringSceneGui += SceneViewOnDuringSceneGui;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
-            CompilationPipeline.assemblyCompilationFinished += OnCompilationFinished;
+            CompilationPipeline.assemblyCompilationFinished += OnCompilationFinished; 
         }
 
         private static void OnCompilationStarted(object obj)
@@ -105,8 +72,6 @@ namespace Vella.Common
 
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            Debug.Log($"{state}");
-
             switch (state)
             {
                 case PlayModeStateChange.ExitingEditMode:
@@ -114,18 +79,23 @@ namespace Vella.Common
                     NativeDebugSharedData.State.IsTransitioning = true;
                     break;
 
-                case PlayModeStateChange.EnteredPlayMode:
                 case PlayModeStateChange.EnteredEditMode:
+                case PlayModeStateChange.EnteredPlayMode:
                     NativeDebugSharedData.State.IsTransitioning = false;
                     break;
             }
         }
 
         private static int _lastStoppedFrame = -1;
+        private static NativeStream _a;
+        private static NativeStreamRotation _stream;
 
         private static void SceneViewOnDuringSceneGui(SceneView obj)
         {
             if (NativeDebugSharedData.State.IsTransitioning)
+                return;
+
+            if (!NativeDebugSharedData.Stream.Current.IsCreated)
                 return;
 
             var lastFrame = NativeDebugSharedData.Time.LastFrame;
@@ -212,12 +182,24 @@ namespace Vella.Common
             if (NativeDebugSharedData.State.IsTransitioning)
                 return;
 
+            if (!NativeDebugSharedData.Stream.Current.IsCreated)
+                return;
+
             CheckForFrameChange();
 
-            var writer = NativeDebugSharedData.Stream.Writer;
+            // The only benefit of using a new AsWriter() is that it would be injected with the threadId in a job situation
+            // which isn't going to happen here so the whole per thread separation aspect of NativeStream based on threadId
+            // is not working in this context.
+            
+            // todo consider overloads that pass in a threadId + 1 for managed.
+            // Even then the only way to get rid of the interlocked count is to have separate draw loops in SceneViewOnDuringSceneGui for each thread. Reason being,
+            // NativeStream relies on jobs having a range of indices they're supposed to write in, which doesn't apply here with calls coming in from anywhere.
+
+            ref var writer = ref NativeDebugSharedData.Stream.Writer;
             var count = NativeDebugSharedData.Stream.GetIndex();
 
-            // Just cap draw calls rather than trying to figure out if a scene view is visible and therefore clearing the stream.
+            // Just cap draw calls rather than trying to figure out if a scene view is visible
+            // (SceneViewOnDuringSceneGui won't run while scene views aren't visible, so the stream would fill up);
             if (count >= writer.ForEachCount)
                 return;
 
@@ -425,6 +407,7 @@ namespace Vella.Common
         //    });
         //}
 
+        [Conditional("UNITY_EDITOR")]
         public static unsafe void DrawAAConvexPolygon(NativeArray<float3> worldPoints, Color? color = null)
         {
             QueueDrawing(new Polygon
@@ -436,6 +419,7 @@ namespace Vella.Common
             });
         }
 
+        [Conditional("UNITY_EDITOR")]
         public static unsafe void DrawAAConvexPolygon(NativeArray<float3> localPoints, float3 offset, Color? color = null)
         {
             QueueDrawing(new Polygon
@@ -448,6 +432,7 @@ namespace Vella.Common
             });
         }
 
+        [Conditional("UNITY_EDITOR")]
         public static unsafe void DrawAAConvexPolygon(float3* points, int pointCount, Color? color = null)
         {
             QueueDrawing(new Polygon
@@ -660,8 +645,6 @@ namespace Vella.Common
 
         public static void Log(int threadIndex, NativeString512 text)
         {
-            //var threadData = new DrawTester.NativeDebugger();
-
             QueueDrawing(new Log
             {
                 Type = DebugDrawingType.Log,
@@ -1187,12 +1170,15 @@ namespace Vella.Common
 
         public const int MaxCount = 100;
 
+        private static bool _isCreated;
+
         static NativeDebugSharedData()
         {
             SharedData = SharedStatic<Container>.GetOrCreate<Key>();
         }
 
         private static readonly SharedStatic<Container> SharedData;
+        private static NativeStreamRotation _disposeSentinelRefHolder;
 
         public struct TimeData
         {
@@ -1201,16 +1187,9 @@ namespace Vella.Common
             public int LastFrame { get; set; }
         }
 
-        public struct CameraData
-        {
-            public float3 Position { get; set; }
-        }
-
         public struct StateData
         {
             public bool IsTransitioning { get; set; }
-
-            public bool IsVisible { get; set; }
         }
 
         private struct Container
@@ -1230,6 +1209,41 @@ namespace Vella.Common
 
     }
 
+    public static unsafe class NativeStreamExtensions
+    {
+        public unsafe struct NativeStreamHeader
+        {
+            public NativeStream.BlockStreamData* Block;
+            public Allocator AllocatorLabel;
+        }
+
+        public static void Clear(this NativeStream stream)
+        {
+            if (!stream.IsCreated)
+                return;
+
+            var streamHeader = (NativeStreamHeader*)UnsafeUtility.AddressOf(ref stream);
+            if ((IntPtr)streamHeader->Block == IntPtr.Zero)
+                return;
+
+            int blockCount = JobsUtility.MaxJobThreadCount;
+            var blocksSize = sizeof(NativeStream.Block*) * blockCount;
+
+            long forEachAllocationSize = sizeof(NativeStream.Range) * stream.ForEachCount;
+            UnsafeUtility.MemClear(streamHeader->Block->Ranges, forEachAllocationSize);
+
+            for (int index = 0; index != streamHeader->Block->BlockCount; ++index)
+            {
+                NativeStream.Block* next;
+                for (NativeStream.Block* blockPtr = streamHeader->Block->Blocks[index]; (IntPtr)blockPtr != IntPtr.Zero; blockPtr = next)
+                {
+                    next = blockPtr->Next;
+                    UnsafeUtility.MemClear(blockPtr, blocksSize);
+                }
+            }
+        }
+    }
+
     public unsafe struct NativeStreamRotation
     {
         public NativeStream Current;
@@ -1239,19 +1253,31 @@ namespace Vella.Common
         public NativeStream Last;
         public int Count;
 
-        //public NativeStreamRotation(int size, Allocator allocator) : this()
-        //{
-        //    Allocate(size, allocator); 
-        //}
+        public NativeStreamRotation(int size, Allocator allocator) : this()
+        {
+            Allocate(size, allocator);
+        }
 
-        //public void Allocate(int size, Allocator allocator)
-        //{
-        //    Current = new NativeStream(size, allocator);
-        //    Next = new NativeStream(size, allocator);
-        //    Last = new NativeStream(size, allocator);
-        //    Writer = Current.AsWriter();
-        //    Reader = Current.AsReader();
-        //}
+        public void Allocate(int size, Allocator allocator)
+        {
+            Current = new NativeStream(size, allocator);
+            Next = new NativeStream(size, allocator);
+            Last = new NativeStream(size, allocator);
+            Writer = Current.AsWriter();
+            Reader = Current.AsReader();
+
+            // The DisposeSentinels will report leaks if there are no managed
+            // objects holding a reference to the streams stored inside SharedStatic<T>.
+            // This is a problem on the initial Editor start and during Edit->Play mode transition
+            // The whole thing is a bit of a disaster, and since this is an editor-only utility
+            // with only one allocation i'm just turning it off.
+
+            #if ENABLE_UNITY_COLLECTIONS_CHECKS
+            Current.DisableSentinel();
+            Next.DisableSentinel();
+            Last.DisableSentinel();
+            #endif
+        }
 
         public int GetIndex()
         {
@@ -1260,7 +1286,9 @@ namespace Vella.Common
 
         public void UseNext()
         {
+            var last = Last;
             Last = Current;
+            Next = last;
             Next.Clear();
             Count = 0;
             Writer = Next.AsWriter(); 
@@ -1270,14 +1298,28 @@ namespace Vella.Common
 
         public void Dispose()
         {
-            if(Next.IsCreated)
-                Next.Dispose();
+            Next.Dispose();
+            Last.Dispose();
+            Current.Dispose();
+        }
+    }
 
-            if (Last.IsCreated)
-                Last.Dispose();
+    public static class SafetySystemExtensions
+    {
+        private static FieldInfo _safety;
+        private static FieldInfo _sentinel;
 
-            if (Current.IsCreated)
-                Current.Dispose();
+        static SafetySystemExtensions()
+        {
+            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            _safety = typeof(NativeStream).GetField("m_Safety", flags);
+            _sentinel = typeof(NativeStream).GetField("m_DisposeSentinel", flags);
+        }
+
+        public static void DisableSentinel(this NativeStream stream)
+        {
+            var sentinel1 = (DisposeSentinel)_sentinel.GetValue(stream);
+            DisposeSentinel.Clear(ref sentinel1);
         }
     }
 

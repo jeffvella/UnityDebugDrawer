@@ -209,7 +209,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 616799245}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.089, y: 0.319, z: -3.724}
+  m_LocalPosition: {x: 0.85, y: -0.07, z: -0.748}
   m_LocalScale: {x: 0.5, y: 0.5, z: 0.5}
   m_Children: []
   m_Father: {fileID: 1391078935}
@@ -289,7 +289,7 @@ Light:
   m_BounceIntensity: 1
   m_ColorTemperature: 6570
   m_UseColorTemperature: 0
-  m_BoundingSphereOverride: {x: 0, y: 0, z: 0, w: 0}
+  m_BoundingSphereOverride: {x: NaN, y: 5.9e-44, z: 0, w: 1.435e-42}
   m_UseBoundingSphereOverride: 0
   m_ShadowRadius: 0
   m_ShadowAngle: 0
@@ -477,7 +477,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1345535477}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -0.288, y: 0.227, z: -1.161}
+  m_LocalPosition: {x: 0.684, y: 1.12, z: 2.774}
   m_LocalScale: {x: 0.5, y: 0.5, z: 0.5}
   m_Children: []
   m_Father: {fileID: 1391078935}
@@ -515,7 +515,7 @@ MonoBehaviour:
   Start: {fileID: 1345535477}
   End: {fileID: 616799245}
   DrawInEditMode: 1
-  UseBurstJob: 1
+  UseBurstJob: 0
   DrawMethods:
     Sphere: 1
     RectangleWithOutline: 1
@@ -532,6 +532,7 @@ MonoBehaviour:
     LogWarning: 0
     LogError: 0
     Arrow: 1
+    Point: 1
     _saved: 1
 --- !u!4 &1391078935
 Transform:
