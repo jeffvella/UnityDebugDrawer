@@ -47,13 +47,17 @@ namespace Vella.Common
     public static class DebugDrawer
     {
         public static Color DefaultColor => UnityColors.White;
+        private static int _lastStoppedFrame = -1;
+        private static NativeStream _a;
+        private static NativeStreamRotation _stream;
+        private static bool _isCreated;
 
 #if UNITY_EDITOR
 
         [InitializeOnLoadMethod]
         static void OnRuntimeMethodLoad()
         {
-            NativeDebugSharedData.Stream = new NativeStreamRotation(100, Allocator.Persistent);
+            NativeDebugSharedData.Stream.Allocate(100, Allocator.Persistent);
             SceneView.duringSceneGui += SceneViewOnDuringSceneGui;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
@@ -87,9 +91,7 @@ namespace Vella.Common
             }
         }
 
-        private static int _lastStoppedFrame = -1;
-        private static NativeStream _a;
-        private static NativeStreamRotation _stream;
+
 
         private static void SceneViewOnDuringSceneGui(SceneView obj)
         {
@@ -300,51 +302,6 @@ namespace Vella.Common
             });
         }
 
-        ///// <summary>
-        ///// Draw a solid outlined rectangle in 3D space.
-        ///// </summary>
-        ///// <param name="verts">The screen coodinates rectangle.</param>
-        ///// <param name="faceColor">The color of the rectangle's face.</param>
-        ///// <param name="outlineColor">The outline color of the rectangle.</param>
-        //[Conditional("UNITY_EDITOR")]
-        //public static void DrawSolidRectangleWithOutline(Rect rectangle, Color? faceColor = null, Color? outlineColor = null)
-        //{
-        //    //Vector3[] verts = new float3[]
-        //    //{
-        //    //    new float3(rectangle.xMin, rectangle.yMin, 0f),
-        //    //    new float3(rectangle.xMax, rectangle.yMin, 0f),
-        //    //    new float3(rectangle.xMax, rectangle.yMax, 0f),
-        //    //    new float3(rectangle.xMin, rectangle.yMax, 0f)
-        //    //};
-
-        //    QueueDrawing(new RectangleWithOutline
-        //    {
-        //        Type = DebugDrawingType.RectangleWithOutline,
-        //        FaceColor = faceColor ?? DefaultColor,
-        //        OutlineColor = outlineColor ?? DefaultColor,
-        //        VertA = new float3(rectangle.xMin, rectangle.yMin, 0f),
-        //        VertB = new float3(rectangle.xMax, rectangle.yMin, 0f),
-        //        VertC = new float3(rectangle.xMax, rectangle.yMax, 0f),
-        //        VertD = new float3(rectangle.xMin, rectangle.yMax, 0f)
-        //    });
-
-        //    //Vector3[] verts = new Vector3[]
-        //    //{
-        //    //    new Vector3(rectangle.xMin, rectangle.yMin, 0f),
-        //    //    new Vector3(rectangle.xMax, rectangle.yMin, 0f),
-        //    //    new Vector3(rectangle.xMax, rectangle.yMax, 0f),
-        //    //    new Vector3(rectangle.xMin, rectangle.yMax, 0f)
-        //    //};
-
-        //    //QueueDrawing(new RectangleWithOutline
-        //    //{
-        //    //    Type = DebugDrawingType.RectangleWithOutline,
-        //    //    FaceColor = faceColor ?? DefaultColor,
-        //    //    OutlineColor = outlineColor ?? DefaultColor,
-        //    //    Verts = verts,
-        //    //});
-        //}
-
         /// <summary>
         /// Draw a solid outlined rectangle in 3D space.
         /// </summary>
@@ -446,11 +403,6 @@ namespace Vella.Common
             });
         }
 
-        /// <summary>
-        /// Draw anti-aliased convex polygon specified with point array.
-        /// </summary>
-        /// <param name="verts">List of points describing the convex polygon</param>
-        /// <param name="faceColor"></param>
         [Conditional("UNITY_EDITOR")]
         public static void DrawSphere(Vector3 center, float radius, Color? color = null)
         {
@@ -487,7 +439,7 @@ namespace Vella.Common
             DrawCone(position + direction, -direction * 0.33f, color ?? DefaultColor, 15, 1f, duration, depthTest);
         }
 
-        /// <summary
+        /// <summary>
         /// Draw a point as a cross/star shape made of lines.
         /// </summary>
         /// <param name="position">The point to debug.</param>
@@ -613,25 +565,19 @@ namespace Vella.Common
         /// <param name="center">center of the code in world space</param>
         /// <param name="size">size of the cube (extents*2 or max-min)</param>
         /// <param name="color">the color of the cube lines</param>
+        /// <param name="gapSize">size of empty spaces in the lines</param>
         [Conditional("UNITY_EDITOR")]
-        public static void DrawDottedWireCube(Vector3 center, Vector3 size, Color? color = null, float GapSize = default)
+        public static void DrawDottedWireCube(Vector3 center, Vector3 size, Color? color = null, float gapSize = 1)
         {
-            if (GapSize == default)
-            {
-                GapSize = 1; //Vector3.Distance(Camera.main.transform.position, center);
-            }
-
             QueueDrawing(new DottedWireCube
             {
                 Type = DebugDrawingType.DottedWireCube,
                 Color = color ?? DefaultColor,
                 Center = center,
                 Size = size,
-                GapSize = GapSize,
+                GapSize = gapSize,
             });
         }
-
-
 
         /// <summary>
         /// Draws a cube made with lines
@@ -676,8 +622,6 @@ namespace Vella.Common
                 Message = text
             });
         }
-
-
     }
 
     public struct Sphere : INativeDebuggable
@@ -730,6 +674,7 @@ namespace Vella.Common
 
         public void Execute()
         {
+#if UNITY_EDITOR
             Handles.color = Color;
             var arr = UnsafeToArray<Vector3>(Verts, Count);
             if (math.all(Offset != float3.zero))
@@ -740,6 +685,7 @@ namespace Vella.Common
                 }
             }
             Handles.DrawAAConvexPolygon(arr);
+#endif
         }
 
         public static T[] UnsafeToArray<T>(void* src, int length) where T : struct
@@ -1010,6 +956,7 @@ namespace Vella.Common
 
         public void Execute()
         {
+#if UNITY_EDITOR
             Handles.color = Color;
             Handles.DrawLine(Lbb, Rbb);
             Handles.DrawLine(Rbb, Lbf);
@@ -1023,6 +970,7 @@ namespace Vella.Common
             Handles.DrawLine(Rbb, Rub);
             Handles.DrawLine(Lbf, Luf);
             Handles.DrawLine(Rbf, Ruf);
+#endif
         }
     }
 
@@ -1035,7 +983,9 @@ namespace Vella.Common
 
         public void Execute()
         {
+#if UNITY_EDITOR
             GUIDrawingUtility.CenteredLabel(Position, Text.ToString(), GUIDrawingUtility.GetStyle(Style));
+#endif
         }
     }
 
@@ -1049,6 +999,7 @@ namespace Vella.Common
 
         public void Execute()
         {
+#if UNITY_EDITOR
             switch (DisplayType)
             {
                 case LogDisplayType.None: break;
@@ -1064,6 +1015,7 @@ namespace Vella.Common
                     break;
                 default: throw new ArgumentOutOfRangeException();
             }
+#endif
         }
 
         public enum LogDisplayType
@@ -1168,38 +1120,30 @@ namespace Vella.Common
 
     public static class NativeDebugSharedData
     {
+        private static readonly SharedStatic<Container> SharedData;
+
         private class Key { }
-
-        public const int MaxCount = 100;
-
-        private static bool _isCreated;
 
         static NativeDebugSharedData()
         {
             SharedData = SharedStatic<Container>.GetOrCreate<Key>();
         }
 
-        private static readonly SharedStatic<Container> SharedData;
-        private static NativeStreamRotation _disposeSentinelRefHolder;
-
         public struct TimeData
         {
-            public int FrameCount { get; set; }
-
-            public int LastFrame { get; set; }
+            public int FrameCount;
+            public int LastFrame;
         }
 
         public struct StateData
         {
-            public bool IsTransitioning { get; set; }
+            public bool IsTransitioning;
         }
 
         private struct Container
         {
             public TimeData TimeData;
-
             public NativeStreamRotation StreamRotation;
-
             public StateData StateData;
         }
 
@@ -1249,11 +1193,11 @@ namespace Vella.Common
     public unsafe struct NativeStreamRotation
     {
         public NativeStream Current;
-        public NativeStream.Writer Writer;
         public NativeStream.Reader Reader;
         public NativeStream Next;
         public NativeStream Last;
         public int Count;
+        public bool IsAllocated;
 
         public NativeStreamRotation(int size, Allocator allocator) : this()
         {
@@ -1262,10 +1206,12 @@ namespace Vella.Common
 
         public void Allocate(int size, Allocator allocator)
         {
+            if (IsAllocated)
+                return;
+
             Current = new NativeStream(size, allocator);
             Next = new NativeStream(size, allocator);
             Last = new NativeStream(size, allocator);
-            Writer = Current.AsWriter();
             Reader = Current.AsReader();
 
             // The DisposeSentinels will report leaks if there are no managed
@@ -1279,6 +1225,7 @@ namespace Vella.Common
             Next.DisableSentinel();
             Last.DisableSentinel();
 #endif
+            IsAllocated = true;
         }
 
         public int GetIndex()
@@ -1293,7 +1240,6 @@ namespace Vella.Common
             Next = last;
             Next.Clear();
             Count = 0;
-            Writer = Next.AsWriter();
             Reader = Next.AsReader();
             Current = Next;
         }
@@ -1309,6 +1255,7 @@ namespace Vella.Common
             Next.Dispose();
             Last.Dispose();
             Current.Dispose();
+            IsAllocated = false;
         }
     }
 
