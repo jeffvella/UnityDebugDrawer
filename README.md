@@ -1,6 +1,8 @@
 # UnityDebugDrawer 
 
-Draw debug handles, text and other GUI elements in the scene view from anywhere in your code base. (Now with Burst/Jobs support!)
+Draw debug handles, text and other GUI elements in the scene view from anywhere in your code base. 
+
+** Now with Burst/Jobs support! Draw from within Burst jobs thanks to SharedStatic<T> and NativeStream **
 
 A static class wrapping the "SceneView.duringSceneGui" event to allow calling of GUI only debug features from outside of OnGUI contexts. You can just use it hassle-free like you would with Debug.DrawLine() etc.
 
