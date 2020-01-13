@@ -44,7 +44,8 @@ public class DrawTester : MonoBehaviour
 
         if (UseBurstJob)
         {
-            new NativeDrawJob
+            _handle.Complete();
+            _handle = new NativeDrawJob
             {
                 Start = Start.transform.position,
                 End = End.transform.position,
@@ -52,7 +53,7 @@ public class DrawTester : MonoBehaviour
                 Methods = DrawMethods,
                 Polyhedron = Hexagon
 
-            }.Run();
+            }.Schedule(_handle);
         }
         else
         {
@@ -107,7 +108,7 @@ public class DrawTester : MonoBehaviour
         {
             if (Hexagon.IsCreated)
             {
-                Debug.Log("Disposed Hexagon"); 
+                Debug.Log("Disposed Hexagon");
                 Hexagon.Dispose();
             }
             _isTransitioningMode = true;
@@ -123,7 +124,7 @@ public class DrawTester : MonoBehaviour
         if (Hexagon.IsCreated)
         {
             Hexagon.Dispose();
-        } 
+        }
     }
 
     private void OnEnable()
@@ -138,6 +139,7 @@ public class DrawTester : MonoBehaviour
 
     public static NativeArray<float3> Hexagon;
     private bool _isTransitioningMode;
+    private JobHandle _handle;
 
     private static NativeArray<float3> GenerateHexagon(float radius = 0.5f)
     {

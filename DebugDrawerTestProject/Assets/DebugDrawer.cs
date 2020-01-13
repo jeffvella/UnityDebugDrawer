@@ -48,8 +48,8 @@ namespace Vella.Common
     {
         public static Color DefaultColor => UnityColors.White;
         private static int _lastStoppedFrame = -1;
-        private static NativeStream _a;
-        private static NativeStreamRotation _stream;
+        private static UnsafeStream _a;
+        private static UnsafeStreamRotation _stream;
         private static bool _isCreated;
 
 #if UNITY_EDITOR
@@ -127,7 +127,7 @@ namespace Vella.Common
             }
         }
 
-        private static void Draw(ref NativeStream.Reader reader)
+        private static void Draw(ref UnsafeStream.Reader reader)
         {
             while (reader.RemainingItemCount > 0)
             {
@@ -193,9 +193,9 @@ namespace Vella.Common
             CheckForFrameChange();
 
             // new AsWriter() is injected with the threadId when its part of a job which isn't going to happen
-            // here so the whole per thread separation aspect of NativeStream thread safety is not working in this context.
+            // here so the whole per thread separation aspect of UnsafeStream thread safety is not working in this context.
 
-            // Usually in a job situation NativeStream can rely on knowing a range of indices to be written, which is not the case here.
+            // Usually in a job situation UnsafeStream can rely on knowing a range of indices to be written, which is not the case here.
             // Could potentially remove the interlocked count by having separate draw loops in SceneViewOnDuringSceneGui for each thread;
             // Using a stream per threadId + 1 for managed. Though the user would have to pass in the ThreadId manually.
 
@@ -1004,7 +1004,6 @@ namespace Vella.Common
             {
                 case LogDisplayType.None: break;
                 case LogDisplayType.Info:
-
                     Debug.Log(Message + (FromJob ? "[FromJob]" : "") + $" Thread={ThreadId}");
                     break;
                 case LogDisplayType.Warning:
@@ -1143,63 +1142,87 @@ namespace Vella.Common
         private struct Container
         {
             public TimeData TimeData;
-            public NativeStreamRotation StreamRotation;
+            public UnsafeStreamRotation StreamRotation;
             public StateData StateData;
         }
 
         public static ref TimeData Time => ref SharedData.Data.TimeData;
 
-        public static ref NativeStreamRotation Stream => ref SharedData.Data.StreamRotation;
+        public static ref UnsafeStreamRotation Stream => ref SharedData.Data.StreamRotation;
 
         public static ref StateData State => ref SharedData.Data.StateData;
 
     }
 
-    public static unsafe class NativeStreamExtensions
+    public static unsafe class UnsafeStreamExtensions
     {
-        public unsafe struct NativeStreamHeader
+        //////public unsafe struct UnsafeStream
+        //////{
+        //////    public UnsafeStreamBlockData* Block;
+        //////    public Allocator AllocatorLabel;
+        //////}
+
+        public unsafe struct UnsafeStreamBlockData
         {
-            public NativeStream.BlockStreamData* Block;
-            public Allocator AllocatorLabel;
+            internal const int AllocationSize = 4 * 1024;
+            internal Allocator Allocator;
+
+            internal UnsafeStreamBlock** Blocks;
+            internal int BlockCount;
+
+            internal UnsafeStreamRange* Ranges;
+            internal int RangeCount;
         }
 
-        public static void Clear(this NativeStream stream)
+        public unsafe struct UnsafeStreamBlock
         {
-            if (!stream.IsCreated)
+            internal UnsafeStreamBlock* Next;
+            internal fixed byte Data[1];
+        }
+
+        public unsafe struct UnsafeStreamRange
+        {
+            internal UnsafeStreamBlock* Block;
+            internal int OffsetInFirstBlock;
+            internal int ElementCount;
+
+            /// One byte past the end of the last byte written
+            internal int LastOffset;
+            internal int NumberOfBlocks;
+        }
+
+        public static void Clear(this Unity.Collections.LowLevel.Unsafe.UnsafeStream stream)
+        {
+            var blockData = *(UnsafeStreamBlockData**)&stream;
+            if (blockData == null)
                 return;
 
-            var streamHeader = (NativeStreamHeader*)UnsafeUtility.AddressOf(ref stream);
-            if ((IntPtr)streamHeader->Block == IntPtr.Zero)
-                return;
-
-            int blockCount = JobsUtility.MaxJobThreadCount;
-            var blocksSize = sizeof(NativeStream.Block*) * blockCount;
-
-            long forEachAllocationSize = sizeof(NativeStream.Range) * stream.ForEachCount;
-            UnsafeUtility.MemClear(streamHeader->Block->Ranges, forEachAllocationSize);
-
-            for (int index = 0; index != streamHeader->Block->BlockCount; ++index)
+            var blockSize = sizeof(UnsafeStreamBlock*) * blockData->BlockCount;
+            for (int index = 0; index != blockData->BlockCount; ++index)
             {
-                NativeStream.Block* next;
-                for (NativeStream.Block* blockPtr = streamHeader->Block->Blocks[index]; (IntPtr)blockPtr != IntPtr.Zero; blockPtr = next)
+                UnsafeStreamBlock* next;
+                for (UnsafeStreamBlock* blockPtr = blockData->Blocks[index]; (IntPtr)blockPtr != IntPtr.Zero; blockPtr = next)
                 {
                     next = blockPtr->Next;
-                    UnsafeUtility.MemClear(blockPtr, blocksSize);
+                    UnsafeUtility.MemClear(blockPtr, blockSize);
                 }
             }
+
+            long forEachAllocationSize = sizeof(UnsafeStreamRange) * stream.ForEachCount;
+            UnsafeUtility.MemClear(blockData->Ranges, forEachAllocationSize);
         }
     }
 
-    public unsafe struct NativeStreamRotation
+    public unsafe struct UnsafeStreamRotation
     {
-        public NativeStream Current;
-        public NativeStream.Reader Reader;
-        public NativeStream Next;
-        public NativeStream Last;
+        public UnsafeStream Current;
+        public UnsafeStream.Reader Reader;
+        public UnsafeStream Next;
+        public UnsafeStream Last;
         public int Count;
         public bool IsAllocated;
 
-        public NativeStreamRotation(int size, Allocator allocator) : this()
+        public UnsafeStreamRotation(int size, Allocator allocator) : this()
         {
             Allocate(size, allocator);
         }
@@ -1209,22 +1232,10 @@ namespace Vella.Common
             if (IsAllocated)
                 return;
 
-            Current = new NativeStream(size, allocator);
-            Next = new NativeStream(size, allocator);
-            Last = new NativeStream(size, allocator);
+            Current = new UnsafeStream(size, allocator);
+            Next = new UnsafeStream(size, allocator);
+            Last = new UnsafeStream(size, allocator);
             Reader = Current.AsReader();
-
-            // The DisposeSentinels will report leaks if there are no managed
-            // objects holding a reference to the streams stored inside SharedStatic<T>.
-            // This is a problem on the initial Editor start and during Edit->Play mode transition
-            // The whole thing is a bit of a disaster, and since this is an editor-only utility
-            // with only one allocation i'm just turning it off.
-
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-            Current.DisableSentinel();
-            Next.DisableSentinel();
-            Last.DisableSentinel();
-#endif
             IsAllocated = true;
         }
 
@@ -1235,9 +1246,14 @@ namespace Vella.Common
 
         public void UseNext()
         {
+            if (!IsAllocated)
+                return;
+
             var last = Last;
             Last = Current;
             Next = last;
+            //Next.Dispose();
+            //Next = new UnsafeStream(100, Allocator.Persistent);
             Next.Clear();
             Count = 0;
             Reader = Next.AsReader();
@@ -1246,6 +1262,9 @@ namespace Vella.Common
 
         public void Clear()
         {
+            if (!IsAllocated)
+                return;
+
             NativeDebugSharedData.Stream.Current.Clear();
             NativeDebugSharedData.Stream.Count = 0;
         }
@@ -1256,25 +1275,6 @@ namespace Vella.Common
             Last.Dispose();
             Current.Dispose();
             IsAllocated = false;
-        }
-    }
-
-    public static class SafetySystemExtensions
-    {
-        private static FieldInfo _safety;
-        private static FieldInfo _sentinel;
-
-        static SafetySystemExtensions()
-        {
-            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
-            _safety = typeof(NativeStream).GetField("m_Safety", flags);
-            _sentinel = typeof(NativeStream).GetField("m_DisposeSentinel", flags);
-        }
-
-        public static void DisableSentinel(this NativeStream stream)
-        {
-            var sentinel1 = (DisposeSentinel)_sentinel.GetValue(stream);
-            DisposeSentinel.Clear(ref sentinel1);
         }
     }
 
