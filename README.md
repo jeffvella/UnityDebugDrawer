@@ -8,6 +8,8 @@ A static class wrapping the "SceneView.duringSceneGui" event to allow calling of
 
 <img src="https://i.imgur.com/SVQRQad.jpg" target="_blank" />
 
+Note: this draws ONLY within the Scene view.
+
 ##### Supported Drawing Styles: #####
 
   Custom:
