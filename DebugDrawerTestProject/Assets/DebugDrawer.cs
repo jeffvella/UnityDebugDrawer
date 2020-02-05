@@ -91,8 +91,6 @@ namespace Vella.Common
             }
         }
 
-
-
         private static void SceneViewOnDuringSceneGui(SceneView obj)
         {
             if (NativeDebugSharedData.State.IsTransitioning)
@@ -112,6 +110,9 @@ namespace Vella.Common
                     // Clear the current stream to stop drawing.
                     NativeDebugSharedData.Stream.UseNext();
                     _lastStoppedFrame = lastFrame;
+                    Debug.Log("Framecount unchanged.");
+
+                    SceneView.RepaintAll();
                 }
 
                 using (var scope = new Handles.DrawingScope())
@@ -134,6 +135,8 @@ namespace Vella.Common
                 var type = reader.Peek<DebugDrawingType>();
                 switch (type)
                 {
+                    case DebugDrawingType.None:
+                        break;
                     case DebugDrawingType.Sphere:
                         reader.Read<Sphere>().Execute();
                         break;
@@ -367,32 +370,32 @@ namespace Vella.Common
         //}
 
         [Conditional("UNITY_EDITOR")]
-        public static unsafe void DrawAAConvexPolygon(NativeArray<float3> worldPoints, Color? color = null)
+        public static unsafe void UnsafeDrawAAConvexPolygon(NativeArray<float3> worldPoints, Color? color = null)
         {
             QueueDrawing(new Polygon
             {
                 Type = DebugDrawingType.Polygon,
                 Color = color ?? DefaultColor,
-                Verts = (float3*)worldPoints.GetUnsafeReadOnlyPtr(),
+                Verts = (float3*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(worldPoints),
                 Count = worldPoints.Length
             });
         }
 
         [Conditional("UNITY_EDITOR")]
-        public static unsafe void DrawAAConvexPolygon(NativeArray<float3> localPoints, float3 offset, Color? color = null)
+        public static unsafe void UnsafeDrawAAConvexPolygon(NativeArray<float3> localPoints, float3 offset, Color? color = null)
         {
             QueueDrawing(new Polygon
             {
                 Type = DebugDrawingType.Polygon,
                 Color = color ?? DefaultColor,
-                Verts = (float3*)localPoints.GetUnsafePtr(),
+                Verts = (float3*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(localPoints),
                 Count = localPoints.Length,
                 Offset = offset,
             });
         }
 
         [Conditional("UNITY_EDITOR")]
-        public static unsafe void DrawAAConvexPolygon(float3* points, int pointCount, Color? color = null)
+        public static unsafe void UnsafeDrawAAConvexPolygon(float3* points, int pointCount, Color? color = null)
         {
             QueueDrawing(new Polygon
             {
@@ -1004,7 +1007,7 @@ namespace Vella.Common
             {
                 case LogDisplayType.None: break;
                 case LogDisplayType.Info:
-                    Debug.Log(Message + (FromJob ? "[FromJob]" : "") + $" Thread={ThreadId}");
+                    Debug.Log(Message + (FromJob ? "[Job]" : "") + $" Thread={ThreadId}");
                     break;
                 case LogDisplayType.Warning:
                     Debug.LogWarning(Message);
@@ -1156,42 +1159,36 @@ namespace Vella.Common
 
     public static unsafe class UnsafeStreamExtensions
     {
-        //////public unsafe struct UnsafeStream
-        //////{
-        //////    public UnsafeStreamBlockData* Block;
-        //////    public Allocator AllocatorLabel;
-        //////}
-
         public unsafe struct UnsafeStreamBlockData
         {
-            internal const int AllocationSize = 4 * 1024;
-            internal Allocator Allocator;
+            public const int AllocationSize = 4 * 1024;
+            public Allocator Allocator;
 
-            internal UnsafeStreamBlock** Blocks;
-            internal int BlockCount;
+            public UnsafeStreamBlock** Blocks;
+            public int BlockCount;
 
-            internal UnsafeStreamRange* Ranges;
-            internal int RangeCount;
+            public UnsafeStreamRange* Ranges;
+            public int RangeCount;
         }
 
         public unsafe struct UnsafeStreamBlock
         {
-            internal UnsafeStreamBlock* Next;
-            internal fixed byte Data[1];
+            public UnsafeStreamBlock* Next;
+            public fixed byte Data[1];
         }
 
         public unsafe struct UnsafeStreamRange
         {
-            internal UnsafeStreamBlock* Block;
-            internal int OffsetInFirstBlock;
-            internal int ElementCount;
+            public UnsafeStreamBlock* Block;
+            public int OffsetInFirstBlock;
+            public int ElementCount;
 
             /// One byte past the end of the last byte written
-            internal int LastOffset;
-            internal int NumberOfBlocks;
+            public int LastOffset;
+            public int NumberOfBlocks;
         }
 
-        public static void Clear(this Unity.Collections.LowLevel.Unsafe.UnsafeStream stream)
+        public static void Clear(this UnsafeStream stream)
         {
             var blockData = *(UnsafeStreamBlockData**)&stream;
             if (blockData == null)
@@ -1252,8 +1249,6 @@ namespace Vella.Common
             var last = Last;
             Last = Current;
             Next = last;
-            //Next.Dispose();
-            //Next = new UnsafeStream(100, Allocator.Persistent);
             Next.Clear();
             Count = 0;
             Reader = Next.AsReader();

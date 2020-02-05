@@ -27,14 +27,16 @@ public class DrawTester : MonoBehaviour
     public bool UseBurstJob;
 
     [Header("Tests")]
-    public DrawingMethods DrawMethods;
+    public TestingDebugDrawOptions DrawOptions;
+
+    public static NativeArray<float3> Hexagon;
+    private JobHandle _jobHandle;
+    private bool _isBurstJob;
+    private SceneView _sceneView;
 
     void Update()
     {
         if (!Application.isPlaying && !DrawInEditMode)
-            return;
-
-        if (_isTransitioningMode)
             return;
 
         if (Start == null || End == null)
@@ -42,49 +44,66 @@ public class DrawTester : MonoBehaviour
 
         var text = new NativeString512("MyText");
 
+        RefreshSceneViewOnJobTypeChanged();
+
         if (UseBurstJob)
         {
-            _handle.Complete();
-            _handle = new NativeDrawJob
+            _jobHandle.Complete();
+            //_jobHandle = new DrawTestingJob
+            //{
+            //    Start = Start.transform.position,
+            //    End = End.transform.position,
+            //    Text = text,
+            //    Methods = DrawOptions,
+            //    Polyhedron = Hexagon
+            //}.Schedule(_jobHandle);
+
+            _jobHandle = new DrawTestingParallelJob
             {
                 Start = Start.transform.position,
                 End = End.transform.position,
                 Text = text,
-                Methods = DrawMethods,
+                Methods = DrawOptions,
                 Polyhedron = Hexagon
 
-            }.Schedule(_handle);
+            }.Schedule(10, 1, _jobHandle);
         }
         else
         {
-            ManagedDraw(Start.transform.position, End.transform.position, text, DrawMethods);
+            ManagedDraw(Start.transform.position, End.transform.position, text, DrawOptions);
         }
     }
 
-    private static void ManagedDraw(Vector3 start, Vector3 end, NativeString512 text, DrawingMethods methods)
+    private void RefreshSceneViewOnJobTypeChanged()
     {
-        //Parallel.For(0, 100, (i, state) =>
+        var useBurst = UseBurstJob;
+        if (useBurst != _isBurstJob)
+        {
+            SceneView.RepaintAll();
+            _isBurstJob = useBurst;
+        }
+    }
+
+    private static void ManagedDraw(Vector3 start, Vector3 end, NativeString512 text, TestingDebugDrawOptions methods)
+    {
+        //for (int i = 0; i < 5; i++)
         //{
-        //    try
+        //    Task.Run(() =>
         //    {
         //        DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        Debug.LogError($"Exception i={i} state={state}: {ex}");
-        //    }
-        //});
+        //    });
+        //}
 
         DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
     }
 
     [BurstCompile]
-    public struct NativeDrawJob : IJob
+    public struct DrawTestingJob : IJob
     {
         public Vector3 Start;
         public Vector3 End;
         public NativeString512 Text;
-        public DrawingMethods Methods;
+        public TestingDebugDrawOptions Methods;
         public NativeArray<float3> Polyhedron;
 
         [NativeSetThreadIndex] public int ThreadIndex;
@@ -95,51 +114,30 @@ public class DrawTester : MonoBehaviour
         }
     }
 
-    public DrawTester()
+    [BurstCompile]
+    public struct DrawTestingParallelJob : IJobParallelFor
     {
-        // Fix Edit/Play transition and compilation leaks;
-        CompilationPipeline.compilationStarted += OnCompilationStarted;
-        EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
-    }
+        public Vector3 Start;
+        public Vector3 End;
+        public NativeString512 Text;
+        public TestingDebugDrawOptions Methods;
+        public NativeArray<float3> Polyhedron;
 
-    private void OnPlayModeStateChanged(PlayModeStateChange obj)
-    {
-        if (obj == PlayModeStateChange.ExitingEditMode)
+        public void Execute(int index)
         {
-            if (Hexagon.IsCreated)
-            {
-                Debug.Log("Disposed Hexagon");
-                Hexagon.Dispose();
-            }
-            _isTransitioningMode = true;
-        }
-        else
-        {
-            _isTransitioningMode = false;
-        }
-    }
-
-    private void OnCompilationStarted(object obj)
-    {
-        if (Hexagon.IsCreated)
-        {
-            Hexagon.Dispose();
+            DrawTests(index, Start, End, Text, Methods, Polyhedron);
         }
     }
 
     private void OnEnable()
     {
-        Hexagon = GenerateHexagon();
+        Hexagon = DebugShapes.GenerateHexagon();
     }
 
     private void OnDestroy()
     {
-        Hexagon.Dispose();
+        Hexagon.Dispose(_jobHandle);
     }
-
-    public static NativeArray<float3> Hexagon;
-    private bool _isTransitioningMode;
-    private JobHandle _handle;
 
     private static NativeArray<float3> GenerateHexagon(float radius = 0.5f)
     {
@@ -154,7 +152,7 @@ public class DrawTester : MonoBehaviour
         return arr;
     }
 
-    private static unsafe void DrawTests(int threadIndex, float3 start, float3 end, NativeString512 text, DrawingMethods methods, NativeArray<float3> polygon)
+    private static unsafe void DrawTests(int threadIndex, float3 start, float3 end, NativeString512 text, TestingDebugDrawOptions methods, NativeArray<float3> polygon, int index = -1)
     {
         float3 offset = Vector3.up * 0.05f + Vector3.left * 0.05f;
         float3 center = (start + (end - start) / 2);
@@ -178,7 +176,7 @@ public class DrawTester : MonoBehaviour
 
         if (methods.Polygon)
         {
-            DebugDrawer.DrawAAConvexPolygon(polygon, center + (float3)Vector3.down * 0.25f, UnityColors.GhostDodgerBlue);
+            DebugDrawer.UnsafeDrawAAConvexPolygon(polygon, center + (float3)Vector3.down * 0.25f, UnityColors.GhostDodgerBlue);
         }
 
         if (methods.Line)
@@ -222,8 +220,24 @@ public class DrawTester : MonoBehaviour
     }
 }
 
+public static class DebugShapes
+{
+    public static NativeArray<float3> GenerateHexagon(float radius = 0.5f)
+    {
+        var arr = new NativeArray<float3>(6, Allocator.Persistent);
+        var a = radius * 0.5f;
+        arr[0] = new float3(radius, 0, 0);
+        arr[1] = new float3(a, 0, radius);
+        arr[2] = new float3(-a, 0, radius);
+        arr[3] = new float3(-radius, 0, 0);
+        arr[4] = new float3(-a, 0, -radius);
+        arr[5] = new float3(a, 0, -radius);
+        return arr;
+    }
+}
+
 [Serializable]
-public struct DrawingMethods : ISerializationCallbackReceiver
+public struct TestingDebugDrawOptions : ISerializationCallbackReceiver
 {
     public bool Sphere;
     public bool RectangleWithOutline;
@@ -259,7 +273,7 @@ public struct DrawingMethods : ISerializationCallbackReceiver
 
     }
 
-    public static DrawingMethods Defaults = new DrawingMethods
+    public static TestingDebugDrawOptions Defaults = new TestingDebugDrawOptions
     {
         Sphere = true,
         RectangleWithOutline = true,

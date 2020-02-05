@@ -208,7 +208,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 12741712}
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -2.55, y: 0, z: 1.45}
+  m_LocalPosition: {x: -2.794, y: 0, z: 0.961}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 1391078935}
@@ -301,7 +301,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 136713792}
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: 0.172, y: 0, z: -1.87}
+  m_LocalPosition: {x: -0.049, y: 0, z: -1.455}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 1391078935}
@@ -546,7 +546,7 @@ MonoBehaviour:
   Start: {fileID: 136713792}
   End: {fileID: 12741712}
   DrawInEditMode: 1
-  UseBurstJob: 0
+  UseBurstJob: 1
   DrawMethods:
     Sphere: 1
     RectangleWithOutline: 1
@@ -573,7 +573,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1391078933}
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 1.45, y: 0, z: 0.696}
+  m_LocalPosition: {x: 1.68, y: 0, z: 0.843}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children:
   - {fileID: 136713796}
