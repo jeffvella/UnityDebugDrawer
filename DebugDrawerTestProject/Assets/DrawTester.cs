@@ -43,6 +43,7 @@ public class DrawTester : MonoBehaviour
     [Header("Options")]
     public bool DrawInEditMode = true;
     public bool UseBurstJob;
+    public bool MultiThreaded;
 
     [Header("Tests")]
     public TestingDebugDrawOptions DrawOptions;
@@ -60,11 +61,6 @@ public class DrawTester : MonoBehaviour
         if (Start == null || End == null)
             return;
 
-        //if (GUI.changed)
-        //{
-            
-        //}
-
         var text = new NativeString512("MyText");
 
         RefreshSceneViewOnJobTypeChanged();
@@ -72,24 +68,31 @@ public class DrawTester : MonoBehaviour
         if (UseBurstJob)
         {
             _jobHandle.Complete();
-            //_jobHandle = new DrawTestingJob
-            //{
-            //    Start = Start.transform.position,
-            //    End = End.transform.position,
-            //    Text = text,
-            //    Methods = DrawOptions,
-            //    Polyhedron = Hexagon
-            //}.Schedule(_jobHandle);
 
-            _jobHandle = new DrawTestingParallelJob
+            if (MultiThreaded)
             {
-                Start = Start.transform.position,
-                End = End.transform.position,
-                Text = text,
-                Methods = DrawOptions,
-                Polyhedron = Hexagon
+                _jobHandle = new DrawTestingParallelJob
+                {
+                    Start = Start.transform.position,
+                    End = End.transform.position,
+                    Text = text,
+                    Methods = DrawOptions,
+                    Polyhedron = Hexagon
 
-            }.Schedule(10, 1, _jobHandle);
+                }.Schedule(10, 1, _jobHandle);
+            }
+            else
+            {
+                _jobHandle = new DrawTestingJob
+                {
+                    Start = Start.transform.position,
+                    End = End.transform.position,
+                    Text = text,
+                    Methods = DrawOptions,
+                    Polyhedron = Hexagon
+                }.Schedule(_jobHandle);
+            }
+
         }
         else
         {
@@ -107,17 +110,22 @@ public class DrawTester : MonoBehaviour
         }
     }
 
-    private static void ManagedDraw(Vector3 start, Vector3 end, NativeString512 text, TestingDebugDrawOptions methods)
+    private void ManagedDraw(Vector3 start, Vector3 end, NativeString512 text, TestingDebugDrawOptions methods)
     {
-        //for (int i = 0; i < 5; i++)
-        //{
-        //    Task.Run(() =>
-        //    {
-        //        DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
-        //    });
-        //}
-
-        DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
+        if(MultiThreaded)
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                Task.Run(() =>
+                {
+                    DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
+                });
+            }
+        }
+        else
+        {
+            DrawTests(Thread.CurrentThread.ManagedThreadId, start, end, text, methods, Hexagon);
+        }
     }
 
     [BurstCompile]
@@ -128,12 +136,17 @@ public class DrawTester : MonoBehaviour
         public NativeString512 Text;
         public TestingDebugDrawOptions Methods;
         public NativeArray<float3> Polyhedron;
+        public JobDebugDrawer Drawer;
 
         [NativeSetThreadIndex] public int ThreadIndex;
 
         public void Execute()
         {
             DrawTests(ThreadIndex, Start, End, Text, Methods, Polyhedron);
+
+            float3 offset = Vector3.up * 0.05f + Vector3.left * 0.05f;
+
+                Drawer.DrawLine((float3)Start + offset * 3, (float3)End + offset * 3, UnityColors.Black);
         }
     }
 
@@ -149,6 +162,8 @@ public class DrawTester : MonoBehaviour
         public void Execute(int index)
         {
             DrawTests(index, Start, End, Text, Methods, Polyhedron);
+
+
         }
     }
 
@@ -160,19 +175,6 @@ public class DrawTester : MonoBehaviour
     private void OnDestroy()
     {
         Hexagon.Dispose(_jobHandle);
-    }
-
-    private static NativeArray<float3> GenerateHexagon(float radius = 0.5f)
-    {
-        var arr = new NativeArray<float3>(6, Allocator.Persistent);
-        var a = radius * 0.5f;
-        arr[0] = new float3(radius, 0, 0);
-        arr[1] = new float3(a, 0, radius);
-        arr[2] = new float3(-a, 0, radius);
-        arr[3] = new float3(-radius, 0, 0);
-        arr[4] = new float3(-a, 0, -radius);
-        arr[5] = new float3(a, 0, -radius);
-        return arr;
     }
 
     private static unsafe void DrawTests(int threadIndex, float3 start, float3 end, NativeString512 text, TestingDebugDrawOptions methods, NativeArray<float3> polygon, int index = -1)

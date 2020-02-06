@@ -45,6 +45,15 @@ namespace Vella.Common
         WireCube
     }
 
+    public struct JobDebugDrawer
+    {
+        [NativeSetThreadIndex] public int ThreadIndex;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void DrawLine(float3 start, float3 end, Color color = default)
+            => DebugDrawer.DrawLine(ThreadIndex, start, end, color);
+    }
+
     public static class DebugDrawer
     {
         public static Color DefaultColor => UnityColors.White;
@@ -52,14 +61,19 @@ namespace Vella.Common
         private static int _lastProcessedFrame;
 
         // An extra channel for drawings queued from main thread / unspecified index.
-        private const int UnknownThreadIndex = JobsUtility.MaxJobThreadCount;
+        //public static int UnknownThreadIndex = JobsUtility.MaxJobThreadCount;
 
 #if UNITY_EDITOR
 
         [InitializeOnLoadMethod]
         static void OnRuntimeMethodLoad()
         {
-            NativeDebugSharedData.Stream.Allocate(JobsUtility.MaxJobThreadCount + 5, Allocator.Persistent);
+            // Use more than the job system's thread count in order to 
+            // support drawing from Task.Run / .Net threadpool.
+            ThreadPool.GetMaxThreads(out int workerThreads, out int portThreads);
+            var maxThreads = math.max(workerThreads, JobsUtility.MaxJobThreadCount);
+
+            NativeDebugSharedData.Stream.Allocate(maxThreads, Allocator.Persistent);
             SceneView.duringSceneGui += SceneViewOnDuringSceneGui;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
@@ -83,7 +97,7 @@ namespace Vella.Common
                 case PlayModeStateChange.ExitingEditMode:
                 case PlayModeStateChange.ExitingPlayMode:
                     NativeDebugSharedData.State.IsTransitioning = true;
-                    //NativeDebugSharedData.Stream.Clear();
+                    NativeDebugSharedData.Stream.Clear();
                     break;
 
                 case PlayModeStateChange.EnteredEditMode:
@@ -98,7 +112,7 @@ namespace Vella.Common
             if (NativeDebugSharedData.State.IsTransitioning)
                 return;
 
-            if (!NativeDebugSharedData.Stream.Current.Stream.IsCreated)
+            if (!NativeDebugSharedData.Stream.IsCreated)
                 return;
 
             var thisFrame = Time.frameCount;
@@ -109,85 +123,13 @@ namespace Vella.Common
             {
                 _lastProcessedFrame = 0;
                 NativeDebugSharedData.Time.LastQueuedFrame = thisFrame;
-                Debug.Log("Transition Reset");
             }
-
-            //Debug.Log($"Current Frame: {thisFrame} LastQueued: {lastQueuedFrame} Processed: {_lastProcessedFrame}");
 
             NativeDebugSharedData.Time.CurrentFrame = thisFrame;
             if (lastQueuedFrame < _lastProcessedFrame)
-            {
-                //Debug.Log("Skipped");
-
-                if (Application.isEditor)
-                {
-                    //if (thisFrame - lastQueuedFrame > 0)
-                    //{
-                        // Clear the current stream to stop drawing.
-                       // NativeDebugSharedData.Stream.Rotate();
-                        //_lastStoppedFrame = lastFrame;
-                        //Debug.Log("Framecount unchanged.");
-                    //SceneView.RepaintAll();
-                    //}
-                    //EditorWindow.GetWindow<SceneView>().Repaint();
-
-                    //using (var scope = new Handles.DrawingScope())
-                    //{
-
-                    //}
-                }
-
                 return;
 
-
-            }
-
-
-
-            //var lastFrame = NativeDebugSharedData.Time.LastFrame;
-            //if (_lastStoppedFrame != lastFrame)
-            //{
-
-
-            //var startDepth = NativeDebugSharedData.Time.Depth;
-
-            // Catch the case where incoming drawing commands have stopped and therefore FrameCount is not being incremented,
-            // this could happen for example if an option was toggled to disable drawing in edit mode. 
-
-
-
-            //NativeDebugSharedData.Time.LastQueuedFrame = Time.frameCount;
-
-
-
-            //Debug.Log($"Processing: {NativeDebugSharedData.Stream.ProcessingStream.ComputeItemCount()} items, Id={NativeDebugSharedData.Stream.ProcessingStreamId} Ptr={((IntPtr)NativeDebugSharedData.Stream.ProcessingStream.GetUnsafePtr()):X}");
-
-
-
-
-
-            //if (NativeDebugSharedData.Time.FrameCount - lastFrame > 1)
-            //{
-            //    // Clear the current stream to stop drawing.
-            //    NativeDebugSharedData.Stream.UseNext();
-            //    _lastStoppedFrame = lastFrame;
-            //    Debug.Log("Framecount unchanged.");
-            //    SceneView.RepaintAll();
-            //}
-
-            //
-            //if (itemCount > 0)
-            //{
-
-            //NativeDebugSharedData.Stream.CloseWriters();
-
-
-
             NativeDebugSharedData.Stream.Rotate();
-
-            var itemCount = NativeDebugSharedData.Stream.ProcessingStream.Stream.ComputeItemCount();
-
-            Debug.Log($"Processing: {itemCount} items");
 
             using (var scope = new Handles.DrawingScope())
             {
@@ -199,18 +141,9 @@ namespace Vella.Common
                     Draw(ref reader);
                     reader.EndForEachIndex();
                 }
-                    
-                //for (int i = 0; i < reader.ForEachCount; i++)
-                //{
-                //    reader.BeginForEachIndex(i);
-                //    Draw(ref reader);
-                //    reader.EndForEachIndex();
-                //}
             }
 
             _lastProcessedFrame = thisFrame;
-            //}
-
         }
 
         private static void Draw(ref UnsafeStream.Reader reader)
@@ -256,6 +189,9 @@ namespace Vella.Common
                     case DebugDrawingType.Log:
                         reader.Read<Log>().Execute();
                         break;
+                    case DebugDrawingType.None:
+                        // todo: investigate switching between Game/Scene view in play mode causing None drawings
+                        break;
                     default:
                         Debug.LogError($"The type {type} is not valid");
                         return;
@@ -266,6 +202,7 @@ namespace Vella.Common
 #endif
 
 
+
         /// <summary>
         /// Draw something custom in the scene view.
         /// </summary>
@@ -273,34 +210,10 @@ namespace Vella.Common
         [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void QueueDrawing<T>(T drawing) where T : struct, INativeDebuggable
         {
-            QueueDrawing(UnknownThreadIndex, drawing);
+            // ** method delibrately will not compile in burst job, use threadIndex overloads ** 
+            // You can use a "[NativeSetThreadIndex] public int ThreadIndex;" field to get it for Schedule()/Run() jobs.
 
-            //if (NativeDebugSharedData.State.IsTransitioning)
-            //    return;
-
-            //if (!NativeDebugSharedData.Stream.Current.IsCreated)
-            //    return;
-
-            //CheckForFrameChange();
-
-            //// new AsWriter() is injected with the threadId when its part of a job which isn't going to happen
-            //// here so the whole per thread separation aspect of UnsafeStream thread safety is not working in this context.
-
-            //// Usually in a job situation UnsafeStream can rely on knowing a range of indices to be written, which is not the case here.
-            //// Could potentially remove the interlocked count by having separate draw loops in SceneViewOnDuringSceneGui for each thread;
-            //// Using a stream per threadId + 1 for managed. Though the user would have to pass in the ThreadId manually.
-
-            //var writer = NativeDebugSharedData.Stream.Current.AsWriter();
-            //var count = NativeDebugSharedData.Stream.GetIndex();
-
-            //// Just cap draw calls rather than trying to figure out if a scene view is visible
-            //// (SceneViewOnDuringSceneGui won't run while scene views aren't visible, so the stream would fill up);
-            //if (count >= writer.ForEachCount)
-            //    return;
-
-            //writer.BeginForEachIndex(count);
-            //writer.Write(drawing);
-            //writer.EndForEachIndex();
+            QueueDrawing(Thread.CurrentThread.ManagedThreadId, drawing);
         }
 
         [Conditional("UNITY_EDITOR")]
@@ -1470,23 +1383,44 @@ namespace Vella.Common
 
             if (!Indices.Contains(threadIndex))
             {
+                //Debug.Log($"Opening Index {threadIndex}  Frame: {NativeDebugSharedData.Time.CurrentFrame}");
+
                 var writer = Stream.AsWriter();
+
+                // Unity assumes writers are only being used by being passed into a job
+                // in that situation the thread index is set by the job system.
                 writer.SetThreadIndex(threadIndex);
+
                 writer.BeginForEachIndex(threadIndex);
                 Writers[threadIndex] = writer;
-                Indices.Add(threadIndex);
+                Indices.AsParallelWriter().AddNoResize(threadIndex);
             }
             Writers[threadIndex].Write(value);
-
+            
             //Interlocked.Decrement(ref ActiveWrites);
         }
 
         public void Close()
         {
+
             for (int i = 0; i < Indices.Length; i++)
             {
                 var index = Indices.Ptr[i];
-                Writers[index].EndForEachIndex();
+
+                //var offset = sizeof(UnsafeStream.Writer) * index;
+                //UnsafeStream.Writer* writerPtr = (Writers + offset);
+                //void* unsafeStreamBlockDataPtr = *(void**)writerPtr;
+                
+                //try
+                //{
+                    Writers[index].EndForEachIndex();
+                    //Debug.Log($"Closed Index {index}");
+                //}
+                //    catch (Exception ex)
+                //{
+                //    Debug.LogError($"Failed to close Index {index} Frame: {Time.frameCount}");
+                //}
+
             }
         }
     }
@@ -1494,15 +1428,6 @@ namespace Vella.Common
     public unsafe struct UnsafeStreamRotation
     {
         public UnsafeSharedStream Current;
-
-        //public UnsafeStream.Reader Reader;
-
-        //public UnsafeStream.Writer* CurrentWriters;
-        //public UnsafeList<int> CurrentWriterIndices;
-
-        //public UnsafeStream.Writer* ProcessingWriters;
-        //public UnsafeList<int> ProcessingWriterIndices;
-
         public UnsafeSharedStream AvailableStream;
         public UnsafeSharedStream ProcessingStream;
 
@@ -1511,12 +1436,18 @@ namespace Vella.Common
         //public int ProcessingStreamId;
         //private int _size;
         //private int _writersAllocationSize;
-
         //public UnsafeList<int> CurrentWriterIndices;
 
         public UnsafeStreamRotation(int size, Allocator allocator) : this()
         {
             Allocate(size, allocator);
+        }
+
+        public void Clear()
+        {
+            Current.Clear();
+            AvailableStream.Clear();
+            ProcessingStream.Clear();
         }
 
         //public void Write<T>(int threadIndex, T value) where T : struct
@@ -1656,24 +1587,9 @@ namespace Vella.Common
             if (IsCreated)
                 return;
 
-            //_size = size;
-
             Current = new UnsafeSharedStream(size, allocator);
             AvailableStream = new UnsafeSharedStream(size, allocator);
             ProcessingStream = new UnsafeSharedStream(size, allocator);
-
-            //Reader = Current.AsReader();
-
-            //_writersAllocationSize = sizeof(UnsafeStream.Writer) * size;
-
-            //CurrentWriters = (UnsafeStream.Writer*)UnsafeUtility.Malloc(_writersAllocationSize, UnsafeUtility.AlignOf<UnsafeStream.Writer>(), Allocator.Persistent);
-            //UnsafeUtility.MemClear(CurrentWriters, _writersAllocationSize);
-
-            //ProcessingWriters = (UnsafeStream.Writer*)UnsafeUtility.Malloc(_writersAllocationSize, UnsafeUtility.AlignOf<UnsafeStream.Writer>(), Allocator.Persistent);
-            //UnsafeUtility.MemClear(ProcessingWriters, _writersAllocationSize);
-
-            //CurrentWriterIndices = new UnsafeList<int>(512, Allocator.Persistent);
-            //ProcessingWriterIndices = new UnsafeList<int>(512, Allocator.Persistent);
 
             IsCreated = true;
         }
@@ -1693,25 +1609,11 @@ namespace Vella.Common
             var current = Current;
 
             AvailableStream = processing;
-            
-            //var currentWriters = CurrentWriters;
-            //var processingWriters = ProcessingWriters;
-            //var currentWriterIndices = CurrentWriterIndices;
-            //var processingWriterIndices = ProcessingWriterIndices;
-            
-            // Switch out writers so that a batch can be processed while new writes still being collected
-            //UnsafeUtility.MemClear(processingWriters, _writersAllocationSize);
-            //processingWriterIndices.Clear();
-            available.Clear();
 
-            //CurrentWriterIndices = processingWriterIndices;
-            //CurrentWriters = processingWriters;
+            available.Clear();
             Current = available;
 
-            //ProcessingWriterIndices = currentWriterIndices;
-            //ProcessingWriters = currentWriters;
             ProcessingStream = current;
-
             ProcessingStream.Close();
 
             //// Finalize the writers for the batch to be processed.
