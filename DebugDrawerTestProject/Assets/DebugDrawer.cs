@@ -19,6 +19,7 @@ using UnityEditor.Compilation;
 using UnityEngine.Assertions;
 using UnityEngine.UIElements;
 using Debug = UnityEngine.Debug;
+using System.Runtime.CompilerServices;
 
 namespace Vella.Common
 {
@@ -47,17 +48,18 @@ namespace Vella.Common
     public static class DebugDrawer
     {
         public static Color DefaultColor => UnityColors.White;
-        private static int _lastStoppedFrame = -1;
-        private static UnsafeStream _a;
-        private static UnsafeStreamRotation _stream;
         private static bool _isCreated;
+        private static int _lastProcessedFrame;
+
+        // An extra channel for drawings queued from main thread / unspecified index.
+        private const int UnknownThreadIndex = JobsUtility.MaxJobThreadCount;
 
 #if UNITY_EDITOR
 
         [InitializeOnLoadMethod]
         static void OnRuntimeMethodLoad()
         {
-            NativeDebugSharedData.Stream.Allocate(100, Allocator.Persistent);
+            NativeDebugSharedData.Stream.Allocate(JobsUtility.MaxJobThreadCount + 5, Allocator.Persistent);
             SceneView.duringSceneGui += SceneViewOnDuringSceneGui;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
@@ -81,7 +83,7 @@ namespace Vella.Common
                 case PlayModeStateChange.ExitingEditMode:
                 case PlayModeStateChange.ExitingPlayMode:
                     NativeDebugSharedData.State.IsTransitioning = true;
-                    NativeDebugSharedData.Stream.Clear();
+                    //NativeDebugSharedData.Stream.Clear();
                     break;
 
                 case PlayModeStateChange.EnteredEditMode:
@@ -91,41 +93,124 @@ namespace Vella.Common
             }
         }
 
-        private static void SceneViewOnDuringSceneGui(SceneView obj)
+        private unsafe static void SceneViewOnDuringSceneGui(SceneView obj)
         {
             if (NativeDebugSharedData.State.IsTransitioning)
                 return;
 
-            if (!NativeDebugSharedData.Stream.Current.IsCreated)
+            if (!NativeDebugSharedData.Stream.Current.Stream.IsCreated)
                 return;
 
-            var lastFrame = NativeDebugSharedData.Time.LastFrame;
-            if (_lastStoppedFrame != lastFrame)
+            var thisFrame = Time.frameCount;
+            var lastQueuedFrame = NativeDebugSharedData.Time.LastQueuedFrame;
+
+            // Reset after editor with script recompile.
+            if (lastQueuedFrame > thisFrame || _lastProcessedFrame > thisFrame) 
             {
-                // Catch the case where incoming drawing commands have stopped and therefore FrameCount is not being incremented,
-                // this could happen for example if an option was toggled to disable drawing in edit mode. 
-                NativeDebugSharedData.Time.FrameCount = Time.frameCount;
-                if (NativeDebugSharedData.Time.FrameCount - lastFrame > 1)
-                {
-                    // Clear the current stream to stop drawing.
-                    NativeDebugSharedData.Stream.UseNext();
-                    _lastStoppedFrame = lastFrame;
-                    Debug.Log("Framecount unchanged.");
-
-                    SceneView.RepaintAll();
-                }
-
-                using (var scope = new Handles.DrawingScope())
-                {
-                    ref var reader = ref NativeDebugSharedData.Stream.Reader;
-                    for (int i = 0; i < reader.ForEachCount; i++)
-                    {
-                        reader.BeginForEachIndex(i);
-                        Draw(ref reader);
-                        reader.EndForEachIndex();
-                    }
-                }
+                _lastProcessedFrame = 0;
+                NativeDebugSharedData.Time.LastQueuedFrame = thisFrame;
+                Debug.Log("Transition Reset");
             }
+
+            //Debug.Log($"Current Frame: {thisFrame} LastQueued: {lastQueuedFrame} Processed: {_lastProcessedFrame}");
+
+            NativeDebugSharedData.Time.CurrentFrame = thisFrame;
+            if (lastQueuedFrame < _lastProcessedFrame)
+            {
+                //Debug.Log("Skipped");
+
+                if (Application.isEditor)
+                {
+                    //if (thisFrame - lastQueuedFrame > 0)
+                    //{
+                        // Clear the current stream to stop drawing.
+                       // NativeDebugSharedData.Stream.Rotate();
+                        //_lastStoppedFrame = lastFrame;
+                        //Debug.Log("Framecount unchanged.");
+                    //SceneView.RepaintAll();
+                    //}
+                    //EditorWindow.GetWindow<SceneView>().Repaint();
+
+                    //using (var scope = new Handles.DrawingScope())
+                    //{
+
+                    //}
+                }
+
+                return;
+
+
+            }
+
+
+
+            //var lastFrame = NativeDebugSharedData.Time.LastFrame;
+            //if (_lastStoppedFrame != lastFrame)
+            //{
+
+
+            //var startDepth = NativeDebugSharedData.Time.Depth;
+
+            // Catch the case where incoming drawing commands have stopped and therefore FrameCount is not being incremented,
+            // this could happen for example if an option was toggled to disable drawing in edit mode. 
+
+
+
+            //NativeDebugSharedData.Time.LastQueuedFrame = Time.frameCount;
+
+
+
+            //Debug.Log($"Processing: {NativeDebugSharedData.Stream.ProcessingStream.ComputeItemCount()} items, Id={NativeDebugSharedData.Stream.ProcessingStreamId} Ptr={((IntPtr)NativeDebugSharedData.Stream.ProcessingStream.GetUnsafePtr()):X}");
+
+
+
+
+
+            //if (NativeDebugSharedData.Time.FrameCount - lastFrame > 1)
+            //{
+            //    // Clear the current stream to stop drawing.
+            //    NativeDebugSharedData.Stream.UseNext();
+            //    _lastStoppedFrame = lastFrame;
+            //    Debug.Log("Framecount unchanged.");
+            //    SceneView.RepaintAll();
+            //}
+
+            //
+            //if (itemCount > 0)
+            //{
+
+            //NativeDebugSharedData.Stream.CloseWriters();
+
+
+
+            NativeDebugSharedData.Stream.Rotate();
+
+            var itemCount = NativeDebugSharedData.Stream.ProcessingStream.Stream.ComputeItemCount();
+
+            Debug.Log($"Processing: {itemCount} items");
+
+            using (var scope = new Handles.DrawingScope())
+            {
+                var reader = NativeDebugSharedData.Stream.ProcessingStream.Stream.AsReader();
+                for (int i = 0; i < NativeDebugSharedData.Stream.ProcessingStream.Indices.Length; i++)
+                {
+                    var index = NativeDebugSharedData.Stream.ProcessingStream.Indices.Ptr[i];
+                    reader.BeginForEachIndex(index);
+                    Draw(ref reader);
+                    reader.EndForEachIndex();
+                }
+                    
+                //for (int i = 0; i < reader.ForEachCount; i++)
+                //{
+                //    reader.BeginForEachIndex(i);
+                //    Draw(ref reader);
+                //    reader.EndForEachIndex();
+                //}
+            }
+
+            _lastProcessedFrame = thisFrame;
+            //}
+
         }
 
         private static void Draw(ref UnsafeStream.Reader reader)
@@ -135,8 +220,6 @@ namespace Vella.Common
                 var type = reader.Peek<DebugDrawingType>();
                 switch (type)
                 {
-                    case DebugDrawingType.None:
-                        break;
                     case DebugDrawingType.Sphere:
                         reader.Read<Sphere>().Execute();
                         break;
@@ -174,54 +257,81 @@ namespace Vella.Common
                         reader.Read<Log>().Execute();
                         break;
                     default:
-                        throw new ArgumentOutOfRangeException($"The type {type} is not valid");
+                        Debug.LogError($"The type {type} is not valid");
+                        return;
+                        //throw new ArgumentOutOfRangeException($"The type {type} is not valid");
                 }
             }
         }
 #endif
 
+
         /// <summary>
         /// Draw something custom in the scene view.
         /// </summary>
         /// <param name="drawing">instance of your IDebugDrawing implementation</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void QueueDrawing<T>(T drawing) where T : struct, INativeDebuggable
+        {
+            QueueDrawing(UnknownThreadIndex, drawing);
+
+            //if (NativeDebugSharedData.State.IsTransitioning)
+            //    return;
+
+            //if (!NativeDebugSharedData.Stream.Current.IsCreated)
+            //    return;
+
+            //CheckForFrameChange();
+
+            //// new AsWriter() is injected with the threadId when its part of a job which isn't going to happen
+            //// here so the whole per thread separation aspect of UnsafeStream thread safety is not working in this context.
+
+            //// Usually in a job situation UnsafeStream can rely on knowing a range of indices to be written, which is not the case here.
+            //// Could potentially remove the interlocked count by having separate draw loops in SceneViewOnDuringSceneGui for each thread;
+            //// Using a stream per threadId + 1 for managed. Though the user would have to pass in the ThreadId manually.
+
+            //var writer = NativeDebugSharedData.Stream.Current.AsWriter();
+            //var count = NativeDebugSharedData.Stream.GetIndex();
+
+            //// Just cap draw calls rather than trying to figure out if a scene view is visible
+            //// (SceneViewOnDuringSceneGui won't run while scene views aren't visible, so the stream would fill up);
+            //if (count >= writer.ForEachCount)
+            //    return;
+
+            //writer.BeginForEachIndex(count);
+            //writer.Write(drawing);
+            //writer.EndForEachIndex();
+        }
+
+        [Conditional("UNITY_EDITOR")]
+        public static void QueueDrawing<T>(int threadIndex, T drawing) where T : struct, INativeDebuggable
         {
             if (NativeDebugSharedData.State.IsTransitioning)
                 return;
 
-            if (!NativeDebugSharedData.Stream.Current.IsCreated)
+            if (!NativeDebugSharedData.Stream.Current.Stream.IsCreated)
                 return;
 
-            CheckForFrameChange();
+            //ref var writer = ref NativeDebugSharedData.Stream.Writer;
+            NativeDebugSharedData.Stream.Current.Write(threadIndex, drawing);
 
-            // new AsWriter() is injected with the threadId when its part of a job which isn't going to happen
-            // here so the whole per thread separation aspect of UnsafeStream thread safety is not working in this context.
+            //writer.BeginForEachIndex(threadIndex);
+            //writer.Write(drawing);
+            //writer.EndForEachIndex();
 
-            // Usually in a job situation UnsafeStream can rely on knowing a range of indices to be written, which is not the case here.
-            // Could potentially remove the interlocked count by having separate draw loops in SceneViewOnDuringSceneGui for each thread;
-            // Using a stream per threadId + 1 for managed. Though the user would have to pass in the ThreadId manually.
-
-            var writer = NativeDebugSharedData.Stream.Current.AsWriter();
-            var count = NativeDebugSharedData.Stream.GetIndex();
-
-            // Just cap draw calls rather than trying to figure out if a scene view is visible
-            // (SceneViewOnDuringSceneGui won't run while scene views aren't visible, so the stream would fill up);
-            if (count >= writer.ForEachCount)
-                return;
-
-            writer.BeginForEachIndex(count);
-            writer.Write(drawing);
-            writer.EndForEachIndex();
+            ref var time = ref NativeDebugSharedData.Time;
+            if (time.CurrentFrame > time.LastQueuedFrame)
+                time.LastQueuedFrame = time.CurrentFrame;
         }
 
         private static void CheckForFrameChange()
         {
-            var currentFrame = NativeDebugSharedData.Time.FrameCount;
-            if (NativeDebugSharedData.Time.LastFrame != currentFrame)
+            var currentFrame = NativeDebugSharedData.Time.CurrentFrame;
+            if (NativeDebugSharedData.Time.LastQueuedFrame != currentFrame)
             {
-                NativeDebugSharedData.Stream.UseNext();
-                NativeDebugSharedData.Time.LastFrame = currentFrame;
+                NativeDebugSharedData.Time.Depth++;
+                NativeDebugSharedData.Stream.Rotate();
+                NativeDebugSharedData.Time.LastQueuedFrame = currentFrame;
             }
         }
 
@@ -235,6 +345,18 @@ namespace Vella.Common
         public static void DrawLabel(Vector3 position, string text, NativeLabelStyles style = NativeLabelStyles.Default)
         {
             QueueDrawing(new Label
+            {
+                Type = DebugDrawingType.Label,
+                Position = position,
+                Text = new NativeString512(text),
+                Style = style,
+            });
+        }
+
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawLabel(int threadIndex, Vector3 position, string text, NativeLabelStyles style = NativeLabelStyles.Default)
+        {
+            QueueDrawing(threadIndex, new Label
             {
                 Type = DebugDrawingType.Label,
                 Position = position,
@@ -261,6 +383,18 @@ namespace Vella.Common
             });
         }
 
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawLabel(int threadIndex, Vector3 position, NativeString512 text, NativeLabelStyles style = NativeLabelStyles.Default)
+        {
+            QueueDrawing(threadIndex, new Label
+            {
+                Type = DebugDrawingType.Label,
+                Position = position,
+                Text = text,
+                Style = style,
+            });
+        }
+
         /// <summary>
         /// Draw a text label in 3D space.
         /// </summary>
@@ -271,6 +405,17 @@ namespace Vella.Common
         public static void DrawLine(Vector3 start, Vector3 end, Color color = default)
         {
             QueueDrawing(new Line
+            {
+                Type = DebugDrawingType.Line,
+                Color = color == default ? DefaultColor : color,
+                Start = start,
+                End = end,
+            });
+        }
+
+        public static void DrawLine(int threadIndex, Vector3 start, Vector3 end, Color color = default)
+        {
+            QueueDrawing(threadIndex, new Line
             {
                 Type = DebugDrawingType.Line,
                 Color = color == default ? DefaultColor : color,
@@ -502,7 +647,16 @@ namespace Vella.Common
         [Conditional("UNITY_EDITOR")]
         public static void DrawRay(Vector3 position, Vector3 direction, Color? color = null, float distance = 1f, float duration = 0, bool depthTest = true)
         {
-            QueueDrawing(new Ray
+            DrawRay(Thread.CurrentThread.ManagedThreadId, position, direction, color, distance, duration, depthTest);
+        }
+
+        /// <summary>
+        /// Draws a line from a position and direction
+        /// </summary>
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawRay(int threadIndex, Vector3 position, Vector3 direction, Color? color = null, float distance = 1f, float duration = 0, bool depthTest = true)
+        {
+            QueueDrawing(threadIndex, new Ray
             {
                 Type = DebugDrawingType.Ray,
                 Position = position,
@@ -550,6 +704,31 @@ namespace Vella.Common
         public static void DrawCone(Vector3 position, Vector3 direction, Color color = default, float angle = 45, float scale = 1f, float duration = 0, bool depthTest = true)
         {
             QueueDrawing(new Cone
+            {
+                Type = DebugDrawingType.Cone,
+                Position = position,
+                Direction = direction,
+                Color = color != default ? color : DefaultColor,
+                Angle = angle,
+                Scale = scale,
+                Duration = duration,
+                DepthTest = depthTest,
+            });
+        }
+
+        /// <summary>
+        /// Debugs a cone.
+        /// </summary>
+        /// <param name="position">The position for the tip of the cone.</param>
+        /// <param name="direction">The direction for the cone gets wider in.</param>
+        /// <param name="color">The angle of the cone.</param>
+        /// <param name="angle">The color of the cone.</param>
+        /// <param name="duration">How long to draw the cone.</param>
+        /// <param name="depthTest">Whether or not the cone should be faded when behind other objects.</param>
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawCone(int threadIndex, Vector3 position, Vector3 direction, Color color = default, float angle = 45, float scale = 1f, float duration = 0, bool depthTest = true)
+        {
+            QueueDrawing(threadIndex, new Cone
             {
                 Type = DebugDrawingType.Cone,
                 Position = position,
@@ -1133,8 +1312,9 @@ namespace Vella.Common
 
         public struct TimeData
         {
-            public int FrameCount;
-            public int LastFrame;
+            public int CurrentFrame;
+            public int LastQueuedFrame;
+            public int Depth;
         }
 
         public struct StateData
@@ -1188,6 +1368,39 @@ namespace Vella.Common
             public int NumberOfBlocks;
         }
 
+        public unsafe struct UnsafeStreamWriter
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeStreamBlockData* m_BlockStream;
+
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeStreamBlock* m_CurrentBlock;
+
+            [NativeDisableUnsafePtrRestriction]
+            public byte* m_CurrentPtr;
+
+            [NativeDisableUnsafePtrRestriction]
+            public byte* m_CurrentBlockEnd;
+
+            public int m_ForeachIndex;
+            public int m_ElementCount;
+
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeStreamBlock* m_FirstBlock;
+
+            public int m_FirstOffset;
+            public int m_NumberOfBlocks;
+
+            [NativeSetThreadIndex]
+            public int m_ThreadIndex;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void SetThreadIndex(this UnsafeStream.Writer writer, int threadIndex)
+        {
+            ((UnsafeStreamWriter*)&writer)->m_ThreadIndex = threadIndex;
+        }
+
         public static void Clear(this UnsafeStream stream)
         {
             var blockData = *(UnsafeStreamBlockData**)&stream;
@@ -1205,72 +1418,330 @@ namespace Vella.Common
                 }
             }
 
+            for (int i = 0; i < blockData->RangeCount; i++)
+            {
+                UnsafeStreamRange range = blockData->Ranges[i];
+            }
+
             long forEachAllocationSize = sizeof(UnsafeStreamRange) * stream.ForEachCount;
             UnsafeUtility.MemClear(blockData->Ranges, forEachAllocationSize);
+        }
+
+        public static UnsafeStreamBlockData* GetUnsafePtr(this UnsafeStream stream)
+        {
+            return *(UnsafeStreamBlockData**)&stream;
+        }
+    }
+
+    public unsafe struct UnsafeSharedStream
+    {
+        public UnsafeStream Stream;
+        public UnsafeStream.Writer* Writers;
+        public UnsafeList<int> Indices;
+
+        private int _size;
+        private Allocator _allocator;
+
+        private int ActiveWrites;
+
+        public UnsafeSharedStream(int size, Allocator allocator)
+        {
+            _size = size;
+            _allocator = allocator;
+
+            Writers = (UnsafeStream.Writer*)UnsafeUtility.Malloc(size * sizeof(UnsafeStream.Writer), UnsafeUtility.AlignOf<UnsafeStream.Writer>(), allocator);
+            Indices = new UnsafeList<int>(size, Allocator.Persistent);
+            Stream = new UnsafeStream(size, allocator);
+            ActiveWrites = default;
+
+            Clear();
+        }
+
+        public void Clear()
+        {
+            UnsafeUtility.MemClear(Writers, _size * sizeof(UnsafeStream.Writer));
+            Indices.Clear();
+            Stream.Clear();
+        }
+
+        public void Write<T>(int threadIndex, T value) where T : struct
+        {
+            //Interlocked.Increment(ref ActiveWrites);
+
+            if (!Indices.Contains(threadIndex))
+            {
+                var writer = Stream.AsWriter();
+                writer.SetThreadIndex(threadIndex);
+                writer.BeginForEachIndex(threadIndex);
+                Writers[threadIndex] = writer;
+                Indices.Add(threadIndex);
+            }
+            Writers[threadIndex].Write(value);
+
+            //Interlocked.Decrement(ref ActiveWrites);
+        }
+
+        public void Close()
+        {
+            for (int i = 0; i < Indices.Length; i++)
+            {
+                var index = Indices.Ptr[i];
+                Writers[index].EndForEachIndex();
+            }
         }
     }
 
     public unsafe struct UnsafeStreamRotation
     {
-        public UnsafeStream Current;
-        public UnsafeStream.Reader Reader;
-        public UnsafeStream Next;
-        public UnsafeStream Last;
-        public int Count;
-        public bool IsAllocated;
+        public UnsafeSharedStream Current;
+
+        //public UnsafeStream.Reader Reader;
+
+        //public UnsafeStream.Writer* CurrentWriters;
+        //public UnsafeList<int> CurrentWriterIndices;
+
+        //public UnsafeStream.Writer* ProcessingWriters;
+        //public UnsafeList<int> ProcessingWriterIndices;
+
+        public UnsafeSharedStream AvailableStream;
+        public UnsafeSharedStream ProcessingStream;
+
+        //public int Count;
+        public bool IsCreated;
+        //public int ProcessingStreamId;
+        //private int _size;
+        //private int _writersAllocationSize;
+
+        //public UnsafeList<int> CurrentWriterIndices;
 
         public UnsafeStreamRotation(int size, Allocator allocator) : this()
         {
             Allocate(size, allocator);
         }
 
+        //public void Write<T>(int threadIndex, T value) where T : struct
+        //{
+        //    //if (CurrentWriterIndices.Contains(threadIndex))
+        //    //{
+        //    //    CurrentWriters[threadIndex] = Current.AsWriter();
+        //    //    CurrentWriters[threadIndex].BeginForEachIndex(threadIndex);
+        //    //    //CurrentWriterIndices.Add(threadIndex);
+        //    //}
+
+        //    //Debug.Assert(CurrentWriters != null);
+
+        //    //var offset = sizeof(UnsafeStream.Writer) * threadIndex;
+
+        //    //Debug.Assert(threadIndex < _size && offset < _writersAllocationSize);
+
+        //    //UnsafeStream.Writer* writerPtr = (CurrentWriters + offset);
+
+        //    ////Debug.Assert(writerPtr < (byte*)CurrentWriters + _writersAllocationSize);
+
+        //    //void* unsafeStreamBlockDataPtr = *(void**)writerPtr;
+
+        //    //// Check if the writer contains a pointer at offset 0.
+        //    //if (unsafeStreamBlockDataPtr == null)
+        //    //{
+        //    //    //UnsafeStream.Writer newWriter = Current.AsWriter();
+        //    //    //UnsafeUtility.CopyStructureToPtr(ref newWriter, writerPtr);
+
+        //    //    *writerPtr = Current.AsWriter();
+        //    //    writerPtr->BeginForEachIndex(threadIndex);
+        //    //}
+
+        //    //ref var writer = ref CurrentWriters[threadIndex];
+
+        //    //if (writer.ForEachCount != 0) // exists?
+        //    //{
+        //    //    writer = Current.AsWriter();
+        //    //    writer.BeginForEachIndex(threadIndex);
+        //    //}
+
+        //    //GetOrCreateWriter(threadIndex)->Write(value);
+
+        //    UnsafeStream.Writer writer;
+
+        //    if (!CurrentWriterIndices.Contains(threadIndex))
+        //    {
+        //        //UnsafeStream.Writer newWriter = Current.AsWriter();
+        //        //UnsafeUtility.CopyStructureToPtr(ref newWriter, writerPtr);
+
+        //        //*writerPtr = Current.AsWriter();
+        //        //writerPtr->BeginForEachIndex(threadIndex);
+        //        writer = Current.AsWriter();
+        //        writer.BeginForEachIndex(threadIndex);
+        //        CurrentWriters[threadIndex] = writer;
+        //        CurrentWriterIndices.Add(threadIndex);
+
+        //        //Debug.Log($"Writer for thread {threadIndex} created");
+        //    }
+        //    else
+        //    {
+                
+        //    }
+            
+
+        //    CurrentWriters[threadIndex].Write(value);
+        //}
+
+        //public bool WriterExists(int threadIndex)
+        //{
+        //    Debug.Assert(CurrentWriters != null);
+
+        //    var offset = sizeof(UnsafeStream.Writer) * threadIndex;
+
+        //    Debug.Assert(threadIndex < _size && offset < _writersAllocationSize);
+
+        //    UnsafeStream.Writer* writerPtr = (CurrentWriters + offset);
+
+        //    void* unsafeStreamBlockDataPtr = *(void**)writerPtr;
+
+        //    return unsafeStreamBlockDataPtr != null;
+        //}
+
+        //public UnsafeStream.Writer* GetWriter(int threadIndex)
+        //{
+        //    Debug.Assert(CurrentWriters != null);
+
+        //    var offset = sizeof(UnsafeStream.Writer) * threadIndex;
+
+        //    Debug.Assert(threadIndex < _size && offset < _writersAllocationSize);
+
+        //    UnsafeStream.Writer* writerPtr = (CurrentWriters + offset);
+
+        //    void* unsafeStreamBlockDataPtr = *(void**)writerPtr;
+
+        //    Debug.Assert(unsafeStreamBlockDataPtr != null);
+
+        //    return writerPtr;
+        //}
+
+        //public UnsafeStream.Writer* GetOrCreateWriter(int threadIndex)
+        //{
+        //    //Debug.Assert(CurrentWriters != null);
+
+        //    //var offset = sizeof(UnsafeStream.Writer) * threadIndex;
+
+        //    //Debug.Assert(threadIndex < _size && offset < _writersAllocationSize);
+
+        //    //UnsafeStream.Writer* writerPtr = (CurrentWriters + offset);
+
+        //    //Debug.Assert(writerPtr < (byte*)CurrentWriters + _writersAllocationSize);
+
+        //    //void* unsafeStreamBlockDataPtr = *(void**)writerPtr;
+
+        //    // Check if the writer contains a pointer at offset 0.
+        //    //if (unsafeStreamBlockDataPtr == null)
+        //    if(!WriterIndices.Contains(threadIndex))
+        //    {
+        //        //UnsafeStream.Writer newWriter = Current.AsWriter();
+        //        //UnsafeUtility.CopyStructureToPtr(ref newWriter, writerPtr);
+
+        //        //*writerPtr = Current.AsWriter();
+        //        //writerPtr->BeginForEachIndex(threadIndex);
+        //        var newWriter = Current.AsWriter();
+        //        newWriter.BeginForEachIndex(threadIndex);
+        //        CurrentWriters[threadIndex] = newWriter;
+        //        WriterIndices.Add(threadIndex);
+
+        //        Debug.Log($"Writer for thread {threadIndex} created");
+        //    }
+        //    //return writerPtr;
+        //}
+
+
         public void Allocate(int size, Allocator allocator)
         {
-            if (IsAllocated)
+            if (IsCreated)
                 return;
 
-            Current = new UnsafeStream(size, allocator);
-            Next = new UnsafeStream(size, allocator);
-            Last = new UnsafeStream(size, allocator);
-            Reader = Current.AsReader();
-            IsAllocated = true;
+            //_size = size;
+
+            Current = new UnsafeSharedStream(size, allocator);
+            AvailableStream = new UnsafeSharedStream(size, allocator);
+            ProcessingStream = new UnsafeSharedStream(size, allocator);
+
+            //Reader = Current.AsReader();
+
+            //_writersAllocationSize = sizeof(UnsafeStream.Writer) * size;
+
+            //CurrentWriters = (UnsafeStream.Writer*)UnsafeUtility.Malloc(_writersAllocationSize, UnsafeUtility.AlignOf<UnsafeStream.Writer>(), Allocator.Persistent);
+            //UnsafeUtility.MemClear(CurrentWriters, _writersAllocationSize);
+
+            //ProcessingWriters = (UnsafeStream.Writer*)UnsafeUtility.Malloc(_writersAllocationSize, UnsafeUtility.AlignOf<UnsafeStream.Writer>(), Allocator.Persistent);
+            //UnsafeUtility.MemClear(ProcessingWriters, _writersAllocationSize);
+
+            //CurrentWriterIndices = new UnsafeList<int>(512, Allocator.Persistent);
+            //ProcessingWriterIndices = new UnsafeList<int>(512, Allocator.Persistent);
+
+            IsCreated = true;
         }
 
-        public int GetIndex()
-        {
-            return Interlocked.Increment(ref Count);
-        }
+        //public void Deallocate()
+        //{
+        //    throw new NotImplementedException();
+        //}
 
-        public void UseNext()
+        public void Rotate()
         {
-            if (!IsAllocated)
+            if (!IsCreated)
                 return;
 
-            var last = Last;
-            Last = Current;
-            Next = last;
-            Next.Clear();
-            Count = 0;
-            Reader = Next.AsReader();
-            Current = Next;
+            var available = AvailableStream;
+            var processing = ProcessingStream;
+            var current = Current;
+
+            AvailableStream = processing;
+            
+            //var currentWriters = CurrentWriters;
+            //var processingWriters = ProcessingWriters;
+            //var currentWriterIndices = CurrentWriterIndices;
+            //var processingWriterIndices = ProcessingWriterIndices;
+            
+            // Switch out writers so that a batch can be processed while new writes still being collected
+            //UnsafeUtility.MemClear(processingWriters, _writersAllocationSize);
+            //processingWriterIndices.Clear();
+            available.Clear();
+
+            //CurrentWriterIndices = processingWriterIndices;
+            //CurrentWriters = processingWriters;
+            Current = available;
+
+            //ProcessingWriterIndices = currentWriterIndices;
+            //ProcessingWriters = currentWriters;
+            ProcessingStream = current;
+
+            ProcessingStream.Close();
+
+            //// Finalize the writers for the batch to be processed.
+            //for (int i = 0; i < ProcessingWriterIndices.Length; i++)
+            //{
+            //    var index = ProcessingWriterIndices.Ptr[i];
+            //    ProcessingWriters[index].EndForEachIndex();
+            //}
+
+            //Debug.Assert(Current.GetUnsafePtr() != ProcessingStream.GetUnsafePtr() 
+            //    && Current.GetUnsafePtr() != AvailableStream.GetUnsafePtr() 
+            //    && AvailableStream.GetUnsafePtr() != ProcessingStream.GetUnsafePtr());
         }
 
-        public void Clear()
-        {
-            if (!IsAllocated)
-                return;
+        //public void Clear()
+        //{
+        //    if (!IsCreated)
+        //        return;
 
-            NativeDebugSharedData.Stream.Current.Clear();
-            NativeDebugSharedData.Stream.Count = 0;
-        }
+        //    NativeDebugSharedData.Stream.Current.Clear();
+        //    NativeDebugSharedData.Stream.Count = 0;
+        //}
 
-        public void Dispose()
-        {
-            Next.Dispose();
-            Last.Dispose();
-            Current.Dispose();
-            IsAllocated = false;
-        }
+        //public void Dispose()
+        //{
+        //    //AvailableStream.Dispose();
+        //    //ProcessingStream.Dispose();
+        //    //Current.Dispose();
+        //    IsCreated = false;
+        //}
     }
 
     public static class UnityColors

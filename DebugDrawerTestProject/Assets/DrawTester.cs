@@ -15,6 +15,24 @@ using UnityEditor.Compilation;
 using UnityEngine;
 using Vella.Common;
 
+[CustomEditor(typeof(DrawTester))]
+public class DrawTesterEditor : Editor
+{
+    protected virtual void OnSceneGUI()
+    {
+        if (target is DrawTester drawTester)
+        {
+            if(drawTester.DrawOptions.HasChanged)
+            {
+                drawTester.DrawOptions.HasChanged = false;
+                EditorUtility.SetDirty(drawTester);
+                SceneView.RepaintAll();
+            }
+        }
+    }
+
+}
+
 [ExecuteInEditMode]
 public class DrawTester : MonoBehaviour
 {
@@ -41,6 +59,11 @@ public class DrawTester : MonoBehaviour
 
         if (Start == null || End == null)
             return;
+
+        //if (GUI.changed)
+        //{
+            
+        //}
 
         var text = new NativeString512("MyText");
 
@@ -157,66 +180,111 @@ public class DrawTester : MonoBehaviour
         float3 offset = Vector3.up * 0.05f + Vector3.left * 0.05f;
         float3 center = (start + (end - start) / 2);
 
-        if (methods.Sphere)
-            DebugDrawer.DrawSphere(start, 0.75f, UnityColors.GhostDodgerBlue);
+        //if (methods.Sphere)
+        //    DebugDrawer.DrawSphere(start, 0.75f, UnityColors.GhostDodgerBlue);
 
-        if (methods.RectangleWithOutline)
-        {
-            var size = 0.25f;
-            var points = stackalloc[]
-            {
-                center + offset + new float3(0, 0, 0),
-                center + offset + new float3(0, size, 0),
-                center + offset + new float3(0, size, size),
-                center + offset + new float3(0, 0, size)
-            };
+        //if (methods.RectangleWithOutline)
+        //{
+        //    var size = 0.25f;
+        //    var points = stackalloc[]
+        //    {
+        //        center + offset + new float3(0, 0, 0),
+        //        center + offset + new float3(0, size, 0),
+        //        center + offset + new float3(0, size, size),
+        //        center + offset + new float3(0, 0, size)
+        //    };
 
-            DebugDrawer.DrawSolidRectangleWithOutline(points, UnityColors.LightYellow, UnityColors.Yellow);
-        }
+        //    DebugDrawer.DrawSolidRectangleWithOutline(points, UnityColors.LightYellow, UnityColors.Yellow);
+        //}
 
-        if (methods.Polygon)
-        {
-            DebugDrawer.UnsafeDrawAAConvexPolygon(polygon, center + (float3)Vector3.down * 0.25f, UnityColors.GhostDodgerBlue);
-        }
+        //if (methods.Polygon)
+        //{
+        //    DebugDrawer.UnsafeDrawAAConvexPolygon(polygon, center + (float3)Vector3.down * 0.25f, UnityColors.GhostDodgerBlue);
+        //}
 
         if (methods.Line)
-            DebugDrawer.DrawLine(start + offset, end + offset);
+            DebugDrawer.DrawLine(threadIndex, start + offset, end + offset);
+
+        if (methods.Line)
+            DebugDrawer.DrawLine(threadIndex, start + offset * 2, end + offset * 2);
 
         if (methods.Ray)
-            DebugDrawer.DrawRay(center, Vector3.up, UnityColors.MediumBlue);
+            DebugDrawer.DrawRay(threadIndex, center, Vector3.up, UnityColors.MediumBlue);
 
         if (methods.Cone)
-            DebugDrawer.DrawCone(center + (float3)Vector3.up * 0.5f, Vector3.up, UnityColors.DarkKhaki, 22.5f);
+            DebugDrawer.DrawCone(threadIndex, center + (float3)Vector3.up * 0.5f, Vector3.up, UnityColors.DarkKhaki, 22.5f);
 
-        if (methods.Circle)
-            DebugDrawer.DrawCircle(center, Vector3.up, 0.25f, UnityColors.AliceBlue);
+        //if (methods.Circle)
+        //    DebugDrawer.DrawCircle(threadIndex, center, Vector3.up, 0.25f, UnityColors.AliceBlue);
 
-        if (methods.DottedLine)
-            DebugDrawer.DrawDottedLine(start, end, Color.yellow);
+        //if (methods.DottedLine)
+        //    DebugDrawer.DrawDottedLine(threadIndex, start, end, Color.yellow);
 
-        if (methods.WireCube)
-            DebugDrawer.DrawWireCube(end, Vector3.one / 2, Color.yellow);
+        //if (methods.WireCube)
+        //    DebugDrawer.DrawWireCube(threadIndex, end, Vector3.one / 2, Color.yellow);
 
-        if (methods.DottedWireCube)
-            DebugDrawer.DrawDottedWireCube(end, Vector3.one, Color.black);
+        //if (methods.DottedWireCube)
+        //    DebugDrawer.DrawDottedWireCube(threadIndex, end, Vector3.one, Color.black);
 
-        if (methods.Label)
-            DebugDrawer.DrawLabel(center + (float3)Vector3.down * 0.25f, text);
+        //if (methods.Label)
+        //    DebugDrawer.DrawLabel(threadIndex, center + (float3)Vector3.down * 0.25f, text);
 
-        if (methods.Arrow)
-            DebugDrawer.DrawArrow(start + (float3)Vector3.up * 0.5f, Vector3.up, Color.blue);
+        //if (methods.Arrow)
+        //    DebugDrawer.DrawArrow(threadIndex, start + (float3)Vector3.up * 0.5f, Vector3.up, Color.blue);
 
-        if (methods.Log)
-            DebugDrawer.Log(threadIndex, text);
+        //if (methods.Log)
+        //    DebugDrawer.Log(threadIndex, text);
 
-        if (methods.LogWarning)
-            DebugDrawer.LogWarning(text);
+        //if (methods.LogWarning)
+        //    DebugDrawer.LogWarning(threadIndex, text);
 
-        if (methods.LogError)
-            DebugDrawer.LogError(text);
+        //if (methods.LogError)
+        //    DebugDrawer.LogError(threadIndex, text);
 
-        if (methods.Point)
-            DebugDrawer.DrawPoint(center + (float3)Vector3.forward, UnityColors.Lavender, 0.25f);
+        //if (methods.Point)
+        //    DebugDrawer.DrawPoint(threadIndex, center + (float3)Vector3.forward, UnityColors.Lavender, 0.25f);
+
+        //if (methods.Line)
+        //    DebugDrawer.DrawLine(threadIndex, start + offset, end + offset);
+
+        //if (methods.Line)
+        //    DebugDrawer.DrawLine(threadIndex, start + offset *2 , end + offset *2);
+
+        //if (methods.Ray)
+        //    DebugDrawer.DrawRay(center, Vector3.up, UnityColors.MediumBlue);
+
+        //if (methods.Cone)
+        //    DebugDrawer.DrawCone(center + (float3)Vector3.up * 0.5f, Vector3.up, UnityColors.DarkKhaki, 22.5f);
+
+        //if (methods.Circle)
+        //    DebugDrawer.DrawCircle(center, Vector3.up, 0.25f, UnityColors.AliceBlue);
+
+        //if (methods.DottedLine)
+        //    DebugDrawer.DrawDottedLine(start, end, Color.yellow);
+
+        //if (methods.WireCube)
+        //    DebugDrawer.DrawWireCube(end, Vector3.one / 2, Color.yellow);
+
+        //if (methods.DottedWireCube)
+        //    DebugDrawer.DrawDottedWireCube(end, Vector3.one, Color.black);
+
+        //if (methods.Label)
+        //    DebugDrawer.DrawLabel(center + (float3)Vector3.down * 0.25f, text);
+
+        //if (methods.Arrow)
+        //    DebugDrawer.DrawArrow(start + (float3)Vector3.up * 0.5f, Vector3.up, Color.blue);
+
+        //if (methods.Log)
+        //    DebugDrawer.Log(threadIndex, text);
+
+        //if (methods.LogWarning)
+        //    DebugDrawer.LogWarning(text);
+
+        //if (methods.LogError)
+        //    DebugDrawer.LogError(text);
+
+        //if (methods.Point)
+        //    DebugDrawer.DrawPoint(center + (float3)Vector3.forward, UnityColors.Lavender, 0.25f);
     }
 }
 
@@ -258,6 +326,8 @@ public struct TestingDebugDrawOptions : ISerializationCallbackReceiver
 
     [SerializeField, HideInInspector]
     private bool _saved;
+    [SerializeField, HideInInspector]
+    public bool HasChanged;
 
     public void OnBeforeSerialize()
     {
@@ -266,11 +336,13 @@ public struct TestingDebugDrawOptions : ISerializationCallbackReceiver
             this = Defaults;
         }
         _saved = true;
+
+        HasChanged = true;
     }
 
     public void OnAfterDeserialize()
     {
-
+        
     }
 
     public static TestingDebugDrawOptions Defaults = new TestingDebugDrawOptions
