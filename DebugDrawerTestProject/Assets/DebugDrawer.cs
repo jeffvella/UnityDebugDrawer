@@ -19,6 +19,7 @@ using UnityEditor.Compilation;
 using UnityEngine.Assertions;
 using UnityEngine.UIElements;
 using Debug = UnityEngine.Debug;
+using System.Runtime.CompilerServices;
 
 namespace Vella.Common
 {
@@ -44,20 +45,39 @@ namespace Vella.Common
         WireCube
     }
 
+    /// <summary>
+    /// An easier wrapper for burst jobs where the ThreadIndex is not easily available.
+    /// </summary>
+    public struct JobDebugDrawer
+    {
+        [NativeSetThreadIndex] public int ThreadIndex;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void DrawLine(float3 start, float3 end, Color color = default)
+            => DebugDrawer.DrawLine(ThreadIndex, start, end, color);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void DrawPoint(Vector3 position, Color? color = null, float scale = 1.0f, float duration = 0, bool depthTest = true)
+            => DebugDrawer.DrawPoint(ThreadIndex, position, color, scale, duration, depthTest);
+    }
+
     public static class DebugDrawer
     {
-        public static Color DefaultColor => UnityColors.White;
-        private static int _lastStoppedFrame = -1;
-        private static NativeStream _a;
-        private static NativeStreamRotation _stream;
+        public static Color DefaultColor { get; } = UnityColors.White;
         private static bool _isCreated;
+        private static int _lastProcessedFrame;
 
 #if UNITY_EDITOR
 
         [InitializeOnLoadMethod]
         static void OnRuntimeMethodLoad()
         {
-            NativeDebugSharedData.Stream.Allocate(100, Allocator.Persistent);
+            // Use more than the job system's thread count in order to 
+            // support drawing from Task.Run / .Net threadpool.
+            ThreadPool.GetMaxThreads(out int workerThreads, out int portThreads);
+            var maxThreads = math.max(workerThreads, JobsUtility.MaxJobThreadCount);
+
+            NativeDebugSharedData.Stream.Allocate(maxThreads, Allocator.Persistent);
             SceneView.duringSceneGui += SceneViewOnDuringSceneGui;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
@@ -91,43 +111,56 @@ namespace Vella.Common
             }
         }
 
-
-
-        private static void SceneViewOnDuringSceneGui(SceneView obj)
+        private unsafe static void SceneViewOnDuringSceneGui(SceneView obj)
         {
             if (NativeDebugSharedData.State.IsTransitioning)
                 return;
 
-            if (!NativeDebugSharedData.Stream.Current.IsCreated)
+            if (!NativeDebugSharedData.Stream.IsCreated)
                 return;
 
-            var lastFrame = NativeDebugSharedData.Time.LastFrame;
-            if (_lastStoppedFrame != lastFrame)
-            {
-                // Catch the case where incoming drawing commands have stopped and therefore FrameCount is not being incremented,
-                // this could happen for example if an option was toggled to disable drawing in edit mode. 
-                NativeDebugSharedData.Time.FrameCount = Time.frameCount;
-                if (NativeDebugSharedData.Time.FrameCount - lastFrame > 1)
-                {
-                    // Clear the current stream to stop drawing.
-                    NativeDebugSharedData.Stream.UseNext();
-                    _lastStoppedFrame = lastFrame;
-                }
+            var thisFrame = Time.frameCount;
+            var lastQueuedFrame = NativeDebugSharedData.Time.LastQueuedFrame;
 
-                using (var scope = new Handles.DrawingScope())
+            // Reset after editor with script recompile.
+            if (lastQueuedFrame > thisFrame || _lastProcessedFrame > thisFrame)
+            {
+                _lastProcessedFrame = 0;
+                NativeDebugSharedData.Time.LastQueuedFrame = thisFrame;
+            }
+
+            NativeDebugSharedData.Time.CurrentFrame = thisFrame;
+
+            // Ensure that the current collection of things to be drawn stays the same
+            // until the collection is actually modified. In Edit modee the scene view is
+            // rendered (SceneViewOnDuringSceneGui called) more frequently than the game updates.
+
+            // Note: this means the 'log' drawings will also be written to console every 
+            // Editor GUI update rather than game update. Todo: if keeping the log feature consider
+            // passing a hasChanged through to Draw() and allowing drawins to control which update
+            // schedule they should use.
+
+            if (lastQueuedFrame >= _lastProcessedFrame)
+            {
+                NativeDebugSharedData.Stream.Rotate();
+            }
+
+            using (var scope = new Handles.DrawingScope())
+            {
+                var reader = NativeDebugSharedData.Stream.ProcessingStream.Stream.AsReader();
+                for (int i = 0; i < NativeDebugSharedData.Stream.ProcessingStream.Indices.Length; i++)
                 {
-                    ref var reader = ref NativeDebugSharedData.Stream.Reader;
-                    for (int i = 0; i < reader.ForEachCount; i++)
-                    {
-                        reader.BeginForEachIndex(i);
-                        Draw(ref reader);
-                        reader.EndForEachIndex();
-                    }
+                    var index = NativeDebugSharedData.Stream.ProcessingStream.Indices.Ptr[i];
+                    reader.BeginForEachIndex(index);
+                    Draw(ref reader);
+                    reader.EndForEachIndex();
                 }
             }
+
+            _lastProcessedFrame = thisFrame;
         }
 
-        private static void Draw(ref NativeStream.Reader reader)
+        private static void Draw(ref UnsafeStream.Reader reader)
         {
             while (reader.RemainingItemCount > 0)
             {
@@ -170,56 +203,29 @@ namespace Vella.Common
                     case DebugDrawingType.Log:
                         reader.Read<Log>().Execute();
                         break;
+                    case DebugDrawingType.None:
+                        // todo: investigate switching between Game/Scene view in play mode causing None drawings
+                        break;
                     default:
-                        throw new ArgumentOutOfRangeException($"The type {type} is not valid");
+                        //Debug.LogError($"The type {type} is not valid"); 
+                        return;
+                        //throw new ArgumentOutOfRangeException($"The type {type} is not valid");
                 }
             }
         }
 #endif
 
-        /// <summary>
-        /// Draw something custom in the scene view.
-        /// </summary>
-        /// <param name="drawing">instance of your IDebugDrawing implementation</param>
         [Conditional("UNITY_EDITOR")]
-        public static void QueueDrawing<T>(T drawing) where T : struct, INativeDebuggable
+        public static void QueueDrawing<T>(int threadIndex, T drawing) where T : struct, INativeDebuggable
         {
             if (NativeDebugSharedData.State.IsTransitioning)
                 return;
 
-            if (!NativeDebugSharedData.Stream.Current.IsCreated)
+            if (!NativeDebugSharedData.Stream.Current.Stream.IsCreated)
                 return;
 
-            CheckForFrameChange();
-
-            // new AsWriter() is injected with the threadId when its part of a job which isn't going to happen
-            // here so the whole per thread separation aspect of NativeStream thread safety is not working in this context.
-
-            // Usually in a job situation NativeStream can rely on knowing a range of indices to be written, which is not the case here.
-            // Could potentially remove the interlocked count by having separate draw loops in SceneViewOnDuringSceneGui for each thread;
-            // Using a stream per threadId + 1 for managed. Though the user would have to pass in the ThreadId manually.
-
-            var writer = NativeDebugSharedData.Stream.Current.AsWriter();
-            var count = NativeDebugSharedData.Stream.GetIndex();
-
-            // Just cap draw calls rather than trying to figure out if a scene view is visible
-            // (SceneViewOnDuringSceneGui won't run while scene views aren't visible, so the stream would fill up);
-            if (count >= writer.ForEachCount)
-                return;
-
-            writer.BeginForEachIndex(count);
-            writer.Write(drawing);
-            writer.EndForEachIndex();
-        }
-
-        private static void CheckForFrameChange()
-        {
-            var currentFrame = NativeDebugSharedData.Time.FrameCount;
-            if (NativeDebugSharedData.Time.LastFrame != currentFrame)
-            {
-                NativeDebugSharedData.Stream.UseNext();
-                NativeDebugSharedData.Time.LastFrame = currentFrame;
-            }
+            NativeDebugSharedData.Stream.Current.Write(threadIndex, drawing);
+            NativeDebugSharedData.Time.LastQueuedFrame = NativeDebugSharedData.Time.CurrentFrame; 
         }
 
         /// <summary>
@@ -228,10 +234,16 @@ namespace Vella.Common
         /// <param name="position">Where to draw the label in world coordinates</param>
         /// <param name="text">What the label should say</param>
         /// <param name="style">Style controlling how the label should look</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawLabel(Vector3 position, string text, NativeLabelStyles style = NativeLabelStyles.Default)
         {
-            QueueDrawing(new Label
+            DrawLabel(Thread.CurrentThread.ManagedThreadId, position, text, style);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawLabel(int threadIndex, Vector3 position, string text, NativeLabelStyles style = NativeLabelStyles.Default)
+        {
+            QueueDrawing(threadIndex, new Label
             {
                 Type = DebugDrawingType.Label,
                 Position = position,
@@ -246,10 +258,16 @@ namespace Vella.Common
         /// <param name="position">Where to draw the label in world coordinates</param>
         /// <param name="text">What the label should say</param>
         /// <param name="style">Style controlling how the label should look</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawLabel(Vector3 position, NativeString512 text, NativeLabelStyles style = NativeLabelStyles.Default)
         {
-            QueueDrawing(new Label
+            DrawLabel(Thread.CurrentThread.ManagedThreadId, position, text, style);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawLabel(int threadIndex, Vector3 position, NativeString512 text, NativeLabelStyles style = NativeLabelStyles.Default)
+        {
+            QueueDrawing(threadIndex, new Label
             {
                 Type = DebugDrawingType.Label,
                 Position = position,
@@ -264,10 +282,22 @@ namespace Vella.Common
         /// <param name="position">Where to draw the label in world coordinates</param>
         /// <param name="text">What the label should say</param>
         /// <param name="style">Style controlling how the label should look</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawLine(Vector3 start, Vector3 end, Color color = default)
         {
-            QueueDrawing(new Line
+            DrawLine(Thread.CurrentThread.ManagedThreadId, start, end, color);
+        }
+
+        /// <summary>
+        /// Draw a text label in 3D space.
+        /// </summary>
+        /// <param name="position">Where to draw the label in world coordinates</param>
+        /// <param name="text">What the label should say</param>
+        /// <param name="style">Style controlling how the label should look</param>
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawLine(int threadIndex, Vector3 start, Vector3 end, Color color = default)
+        {
+            QueueDrawing(threadIndex, new Line
             {
                 Type = DebugDrawingType.Line,
                 Color = color == default ? DefaultColor : color,
@@ -282,20 +312,27 @@ namespace Vella.Common
         /// <param name="start">start position in world space</param>
         /// <param name="end">end position in world space</param>
         /// <param name="color">color of the line</param>
-        /// <param name="GapSize">The space between dots in pixels</param>
-        [Conditional("UNITY_EDITOR")]
-        public static void DrawDottedLine(Vector3 start, Vector3 end, Color? color = null, float GapSize = default)
+        /// <param name="gapSize">The space between dots in pixels</param>
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawDottedLine(Vector3 start, Vector3 end, Color color = default, float gapSize = 1)
         {
-            if (GapSize == default)
-            {
-                //GapSize = Vector3.Distance(Camera.main.transform.position, start) / 10f;
-                GapSize = 1;
-            }
+            DrawDottedLine(Thread.CurrentThread.ManagedThreadId, start, end, color, gapSize);
+        }
 
-            QueueDrawing(new DottedLine
+        /// <summary>
+        /// Draw a debug dotted line.
+        /// </summary>
+        /// <param name="start">start position in world space</param>
+        /// <param name="end">end position in world space</param>
+        /// <param name="color">color of the line</param>
+        /// <param name="GapSize">The space between dots in pixels</param>
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawDottedLine(int threadIndex, Vector3 start, Vector3 end, Color color = default, float GapSize = 1)
+        {
+            QueueDrawing(threadIndex, new DottedLine
             {
                 Type = DebugDrawingType.DottedLine,
-                Color = color ?? DefaultColor,
+                Color = color == default ? DefaultColor : color,
                 Start = start,
                 End = end,
                 GapSize = GapSize,
@@ -308,37 +345,58 @@ namespace Vella.Common
         /// <param name="verts">The 4 vertices of the rectangle in world coordinates.</param>
         /// <param name="faceColor">The color of the rectangle's face.</param>
         /// <param name="outlineColor">The outline color of the rectangle.</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawSolidRectangleWithOutline(Vector3[] verts, Color? faceColor = null, Color? outlineColor = null)
         {
-            QueueDrawing(new RectangleWithOutline
-            {
-                Type = DebugDrawingType.RectangleWithOutline,
-                FaceColor = faceColor ?? DefaultColor,
-                OutlineColor = outlineColor ?? DefaultColor,
-                VertA = verts[0],
-                VertB = verts[1],
-                VertC = verts[2],
-                VertD = verts[3],
-            });
+            DrawSolidRectangleWithOutline(Thread.CurrentThread.ManagedThreadId, verts, faceColor, outlineColor);
         }
 
-        [Conditional("UNITY_EDITOR")]
+        /// <summary>
+        /// Draw a solid outlined rectangle in 3D space.
+        /// </summary>
+        /// <param name="verts">The 4 vertices of the rectangle in world coordinates.</param>
+        /// <param name="faceColor">The color of the rectangle's face.</param>
+        /// <param name="outlineColor">The outline color of the rectangle.</param>
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawSolidRectangleWithOutline(int threadIndex, Vector3[] points, Color? faceColor = null, Color? outlineColor = null)
+        {
+            DrawSolidRectangleWithOutline(threadIndex, points[0], points[1], points[2], points[3], faceColor, outlineColor);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe void DrawSolidRectangleWithOutline(NativeArray<float3> points, Color? faceColor = null, Color? outlineColor = null)
         {
-            DrawSolidRectangleWithOutline(points[0], points[1], points[2], points[3], faceColor, outlineColor);
+            DrawSolidRectangleWithOutline(Thread.CurrentThread.ManagedThreadId, points[0], points[1], points[2], points[3], faceColor, outlineColor);
         }
 
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void DrawSolidRectangleWithOutline(int threadIndex, NativeArray<float3> points, Color? faceColor = null, Color? outlineColor = null)
+        {
+            DrawSolidRectangleWithOutline(threadIndex, points[0], points[1], points[2], points[3], faceColor, outlineColor);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe void DrawSolidRectangleWithOutline(float3* points, Color? faceColor = null, Color? outlineColor = null)
         {
-            DrawSolidRectangleWithOutline(points[0], points[1], points[2], points[3], faceColor, outlineColor);
+            DrawSolidRectangleWithOutline(Thread.CurrentThread.ManagedThreadId, points[0], points[1], points[2], points[3], faceColor, outlineColor);
         }
 
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void DrawSolidRectangleWithOutline(int threadIndex, float3* points, Color? faceColor = null, Color? outlineColor = null)
+        {
+            DrawSolidRectangleWithOutline(threadIndex, points[0], points[1], points[2], points[3], faceColor, outlineColor);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawSolidRectangleWithOutline(float3 a, float3 b, float3 c, float3 d, Color? faceColor = null, Color? outlineColor = null)
         {
-            QueueDrawing(new RectangleWithOutline
+            DrawSolidRectangleWithOutline(Thread.CurrentThread.ManagedThreadId, a, b, c, d, faceColor, outlineColor);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawSolidRectangleWithOutline(int threadIndex, float3 a, float3 b, float3 c, float3 d, Color? faceColor = null, Color? outlineColor = null)
+        {
+            QueueDrawing(threadIndex, new RectangleWithOutline
             {
                 Type = DebugDrawingType.RectangleWithOutline,
                 FaceColor = faceColor ?? DefaultColor,
@@ -366,35 +424,53 @@ namespace Vella.Common
         //    });
         //}
 
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe void DrawAAConvexPolygon(NativeArray<float3> worldPoints, Color? color = null)
         {
-            QueueDrawing(new Polygon
+            DrawAAConvexPolygon(Thread.CurrentThread.ManagedThreadId, worldPoints, color);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void DrawAAConvexPolygon(int threadIndex, NativeArray<float3> worldPoints, Color? color = null)
+        {
+            QueueDrawing(threadIndex, new Polygon
             {
                 Type = DebugDrawingType.Polygon,
                 Color = color ?? DefaultColor,
-                Verts = (float3*)worldPoints.GetUnsafeReadOnlyPtr(),
+                Verts = (float3*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(worldPoints),
                 Count = worldPoints.Length
             });
         }
 
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe void DrawAAConvexPolygon(NativeArray<float3> localPoints, float3 offset, Color? color = null)
         {
-            QueueDrawing(new Polygon
+            DrawAAConvexPolygon(Thread.CurrentThread.ManagedThreadId, localPoints, offset, color);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void DrawAAConvexPolygon(int threadIndex, NativeArray<float3> localPoints, float3 offset, Color? color = null)
+        {
+            QueueDrawing(threadIndex, new Polygon
             {
                 Type = DebugDrawingType.Polygon,
                 Color = color ?? DefaultColor,
-                Verts = (float3*)localPoints.GetUnsafePtr(),
+                Verts = (float3*)NativeArrayUnsafeUtility.GetUnsafeBufferPointerWithoutChecks(localPoints),
                 Count = localPoints.Length,
                 Offset = offset,
             });
         }
 
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static unsafe void DrawAAConvexPolygon(float3* points, int pointCount, Color? color = null)
         {
-            QueueDrawing(new Polygon
+            DrawAAConvexPolygon(Thread.CurrentThread.ManagedThreadId, points, pointCount, color);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static unsafe void DrawAAConvexPolygon(int threadIndex, float3* points, int pointCount, Color? color = null)
+        {
+            QueueDrawing(threadIndex, new Polygon
             {
                 Type = DebugDrawingType.Polygon,
                 Color = color ?? DefaultColor,
@@ -403,13 +479,19 @@ namespace Vella.Common
             });
         }
 
-        [Conditional("UNITY_EDITOR")]
-        public static void DrawSphere(Vector3 center, float radius, Color? color = null)
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawSphere(Vector3 center, float radius, Color color = default)
         {
-            QueueDrawing(new Sphere
+            DrawSphere(center, radius, color);
+        }
+
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawSphere(int threadIndex, Vector3 center, float radius, Color color = default)
+        {
+            QueueDrawing(threadIndex, new Sphere
             {
                 Type = DebugDrawingType.Sphere,
-                Color = color ?? DefaultColor,
+                Color = color == default ? DefaultColor : color,
                 Center = center,
                 Radius = radius,
             });
@@ -423,20 +505,37 @@ namespace Vella.Common
         /// <param name="color">The color of the arrow.</param>
         /// <param name="duration">How long to draw the arrow.</param>
         /// <param name="depthTest">Whether or not the arrow should be faded when behind other objects. </param>
-        [Conditional("UNITY_EDITOR")]
-        public static void DrawArrow(Vector3 position, Vector3 direction, Color? color = null, float duration = 0, bool depthTest = true)
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawArrow(Vector3 position, Vector3 direction, Color color = default, float duration = 0, bool depthTest = true)
         {
-            QueueDrawing(new Ray
+            DrawArrow(Thread.CurrentThread.ManagedThreadId, position, direction, color == default ? DefaultColor : color, duration, depthTest);
+        }
+
+        /// <summary>
+        /// Draws an arrow
+        /// </summary>
+        /// <param name="threadIndex">Index of current thread.</param>
+        /// <param name="position">The start position of the arrow.</param>
+        /// <param name="direction">The direction the arrow will point in.</param>
+        /// <param name="color">The color of the arrow.</param>
+        /// <param name="duration">How long to draw the arrow.</param>
+        /// <param name="depthTest">Whether or not the arrow should be faded when behind other objects. </param>
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawArrow(int threadIndex, Vector3 position, Vector3 direction, Color color = default, float duration = 0, bool depthTest = true)
+        {
+            color = color == default ? DefaultColor : color;
+
+            QueueDrawing(threadIndex, new Ray
             {
                 Type = DebugDrawingType.Ray,
                 Position = position,
                 Direction = direction,
-                Color = color ?? DefaultColor,
+                Color = color,
                 Duration = duration,
                 DepthTest = depthTest,
             });
 
-            DrawCone(position + direction, -direction * 0.33f, color ?? DefaultColor, 15, 1f, duration, depthTest);
+            DrawCone(threadIndex, position + direction, -direction * 0.33f, color, 15, 1f, duration, depthTest);
         }
 
         /// <summary>
@@ -447,8 +546,22 @@ namespace Vella.Common
         /// <param name="scale">The size of the point.</param>
         /// <param name="duration">How long to draw the point.</param>
         /// <param name="depthTest">depthTest</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawPoint(Vector3 position, Color? color = null, float scale = 1.0f, float duration = 0, bool depthTest = true)
+        {
+            DrawPoint(Thread.CurrentThread.ManagedThreadId, position, color, scale, duration, depthTest);
+        }
+
+        /// <summary>
+        /// Draw a point as a cross/star shape made of lines.
+        /// </summary>
+        /// <param name="position">The point to debug.</param>
+        /// <param name="color">The color of the point.</param>
+        /// <param name="scale">The size of the point.</param>
+        /// <param name="duration">How long to draw the point.</param>
+        /// <param name="depthTest">depthTest</param>
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawPoint(int threadIndex, Vector3 position, Color? color = null, float scale = 1.0f, float duration = 0, bool depthTest = true)
         {
             // Debug Extension
             // By Arkham Interactive
@@ -457,12 +570,7 @@ namespace Vella.Common
             // 	- Attempts to mimic Unity's existing debugging behaviour for ease-of-use.
             // 	- Includes gizmo drawing methods for less memory-intensive debug visualization.
 
-            //color = (color != default) ? color : DefaultColor;
-            //Debug.DrawRay(position + (Vector3.up * (scale * 0.25f)), -Vector3.up * scale * 0.5f, color, duration, depthTest);
-            //Debug.DrawRay(position + (Vector3.right * (scale * 0.25f)), -Vector3.right * scale * 0.5f, color, duration, depthTest);
-            //Debug.DrawRay(position + (Vector3.forward * (scale * 0.25f)), -Vector3.forward * scale * 0.5f, color, duration, depthTest);
-
-            QueueDrawing(new Ray
+            QueueDrawing(threadIndex, new Ray
             {
                 Type = DebugDrawingType.Ray,
                 Position = position + (Vector3.up * (scale * 0.25f)),
@@ -472,7 +580,7 @@ namespace Vella.Common
                 DepthTest = depthTest,
             });
 
-            QueueDrawing(new Ray
+            QueueDrawing(threadIndex, new Ray
             {
                 Type = DebugDrawingType.Ray,
                 Position = position + (Vector3.right * (scale * 0.25f)),
@@ -482,7 +590,7 @@ namespace Vella.Common
                 DepthTest = depthTest,
             });
 
-            QueueDrawing(new Ray
+            QueueDrawing(threadIndex, new Ray
             {
                 Type = DebugDrawingType.Ray,
                 Position = position + (Vector3.forward * (scale * 0.25f)),
@@ -496,10 +604,19 @@ namespace Vella.Common
         /// <summary>
         /// Draws a line from a position and direction
         /// </summary>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawRay(Vector3 position, Vector3 direction, Color? color = null, float distance = 1f, float duration = 0, bool depthTest = true)
         {
-            QueueDrawing(new Ray
+            DrawRay(Thread.CurrentThread.ManagedThreadId, position, direction, color, distance, duration, depthTest);
+        }
+
+        /// <summary>
+        /// Draws a line from a position and direction
+        /// </summary>
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawRay(int threadIndex, Vector3 position, Vector3 direction, Color? color = null, float distance = 1f, float duration = 0, bool depthTest = true)
+        {
+            QueueDrawing(threadIndex, new Ray
             {
                 Type = DebugDrawingType.Ray,
                 Position = position,
@@ -519,10 +636,25 @@ namespace Vella.Common
         /// <param name="radius">The radius of the circle.</param>
         /// <param name="duration">How long to draw the circle.</param>
         /// <param name="depthTest">Whether or not the circle should be faded when behind other objects.</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawCircle(Vector3 position, Vector3 up, float radius = 1.0f, Color? color = null, float duration = 0, bool depthTest = true)
         {
-            QueueDrawing(new Circle
+            DrawCircle(Thread.CurrentThread.ManagedThreadId, position, up, radius, color, duration, depthTest);
+        }
+
+        /// <summary>
+        /// Draws a circle
+        /// </summary>
+        /// <param name="position">Where the center of the circle will be positioned.</param>
+        /// <param name="up">The direction perpendicular to the surface of the circle.</param>
+        /// <param name="color">The color of the circle.</param>
+        /// <param name="radius">The radius of the circle.</param>
+        /// <param name="duration">How long to draw the circle.</param>
+        /// <param name="depthTest">Whether or not the circle should be faded when behind other objects.</param>
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawCircle(int threadIndex, Vector3 position, Vector3 up, float radius = 1.0f, Color? color = null, float duration = 0, bool depthTest = true)
+        {
+            QueueDrawing(threadIndex, new Circle
             {
                 Type = DebugDrawingType.Circle,
                 Position = position,
@@ -535,7 +667,22 @@ namespace Vella.Common
         }
 
         /// <summary>
-        /// Debugs a cone.
+        /// Draws a cone.
+        /// </summary>
+        /// <param name="position">The position for the tip of the cone.</param>
+        /// <param name="direction">The direction for the cone gets wider in.</param>
+        /// <param name="color">The angle of the cone.</param>
+        /// <param name="angle">The color of the cone.</param>
+        /// <param name="duration">How long to draw the cone.</param>
+        /// <param name="depthTest">Whether or not the cone should be faded when behind other objects.</param>
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void DrawCone(Vector3 position, Vector3 direction, Color color = default, float angle = 45, float scale = 1f, float duration = 0, bool depthTest = true)
+        {
+            DrawCone(Thread.CurrentThread.ManagedThreadId, position, direction, color, angle, scale, duration, depthTest);
+        }
+
+        /// <summary>
+        /// Draws a cone.
         /// </summary>
         /// <param name="position">The position for the tip of the cone.</param>
         /// <param name="direction">The direction for the cone gets wider in.</param>
@@ -544,9 +691,9 @@ namespace Vella.Common
         /// <param name="duration">How long to draw the cone.</param>
         /// <param name="depthTest">Whether or not the cone should be faded when behind other objects.</param>
         [Conditional("UNITY_EDITOR")]
-        public static void DrawCone(Vector3 position, Vector3 direction, Color color = default, float angle = 45, float scale = 1f, float duration = 0, bool depthTest = true)
+        public static void DrawCone(int threadIndex, Vector3 position, Vector3 direction, Color color = default, float angle = 45, float scale = 1f, float duration = 0, bool depthTest = true)
         {
-            QueueDrawing(new Cone
+            QueueDrawing(threadIndex, new Cone
             {
                 Type = DebugDrawingType.Cone,
                 Position = position,
@@ -566,10 +713,23 @@ namespace Vella.Common
         /// <param name="size">size of the cube (extents*2 or max-min)</param>
         /// <param name="color">the color of the cube lines</param>
         /// <param name="gapSize">size of empty spaces in the lines</param>
-        [Conditional("UNITY_EDITOR")]
+        [Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void DrawDottedWireCube(Vector3 center, Vector3 size, Color? color = null, float gapSize = 1)
         {
-            QueueDrawing(new DottedWireCube
+            DrawDottedWireCube(Thread.CurrentThread.ManagedThreadId, center, size, color, gapSize);
+        }
+
+        /// <summary>
+        /// Draws a cube made with lines
+        /// </summary>
+        /// <param name="center">center of the code in world space</param>
+        /// <param name="size">size of the cube (extents*2 or max-min)</param>
+        /// <param name="color">the color of the cube lines</param>
+        /// <param name="gapSize">size of empty spaces in the lines</param>
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawDottedWireCube(int threadIndex, Vector3 center, Vector3 size, Color? color = null, float gapSize = 1)
+        {
+            QueueDrawing(threadIndex, new DottedWireCube
             {
                 Type = DebugDrawingType.DottedWireCube,
                 Color = color ?? DefaultColor,
@@ -588,12 +748,24 @@ namespace Vella.Common
         [Conditional("UNITY_EDITOR")]
         public static void DrawWireCube(Vector3 center, Vector3 size, Color color = default)
         {
-            QueueDrawing(new WireCube(center, size, color));
+            QueueDrawing(Thread.CurrentThread.ManagedThreadId, new WireCube(center, size, color));
+        }
+
+        /// <summary>
+        /// Draws a cube made with lines
+        /// </summary>
+        /// <param name="center">center of the code in world space</param>
+        /// <param name="size">size of the cube (extents*2 or max-min)</param>
+        /// <param name="color">the color of the cube lines</param>
+        [Conditional("UNITY_EDITOR")]
+        public static void DrawWireCube(int threadIndex, Vector3 center, Vector3 size, Color color = default)
+        {
+            QueueDrawing(threadIndex, new WireCube(center, size, color));
         }
 
         public static void Log(int threadIndex, NativeString512 text)
         {
-            QueueDrawing(new Log
+            QueueDrawing(threadIndex, new Log
             {
                 Type = DebugDrawingType.Log,
                 DisplayType = Common.Log.LogDisplayType.Info,
@@ -603,9 +775,9 @@ namespace Vella.Common
             });
         }
 
-        public static void LogWarning(NativeString512 text)
+        public static void LogWarning(int threadIndex, NativeString512 text)
         {
-            QueueDrawing(new Log
+            QueueDrawing(threadIndex, new Log
             {
                 Type = DebugDrawingType.Log,
                 DisplayType = Common.Log.LogDisplayType.Warning,
@@ -613,9 +785,9 @@ namespace Vella.Common
             });
         }
 
-        public static void LogError(NativeString512 text)
+        public static void LogError(int threadIndex, NativeString512 text)
         {
-            QueueDrawing(new Log
+            QueueDrawing(threadIndex, new Log
             {
                 Type = DebugDrawingType.Log,
                 DisplayType = Common.Log.LogDisplayType.Error,
@@ -1004,8 +1176,7 @@ namespace Vella.Common
             {
                 case LogDisplayType.None: break;
                 case LogDisplayType.Info:
-
-                    Debug.Log(Message + (FromJob ? "[FromJob]" : "") + $" Thread={ThreadId}");
+                    Debug.Log(Message + (FromJob ? "[Job]" : "") + $" Thread={ThreadId}");
                     break;
                 case LogDisplayType.Warning:
                     Debug.LogWarning(Message);
@@ -1131,8 +1302,9 @@ namespace Vella.Common
 
         public struct TimeData
         {
-            public int FrameCount;
-            public int LastFrame;
+            public int CurrentFrame;
+            public int LastQueuedFrame;
+            public int Depth;
         }
 
         public struct StateData
@@ -1143,140 +1315,233 @@ namespace Vella.Common
         private struct Container
         {
             public TimeData TimeData;
-            public NativeStreamRotation StreamRotation;
+            public UnsafeStreamRotation StreamRotation;
             public StateData StateData;
         }
 
         public static ref TimeData Time => ref SharedData.Data.TimeData;
 
-        public static ref NativeStreamRotation Stream => ref SharedData.Data.StreamRotation;
+        public static ref UnsafeStreamRotation Stream => ref SharedData.Data.StreamRotation;
 
         public static ref StateData State => ref SharedData.Data.StateData;
 
     }
 
-    public static unsafe class NativeStreamExtensions
+    public static unsafe class UnsafeStreamExtensions
     {
-        public unsafe struct NativeStreamHeader
+        public unsafe struct UnsafeStreamBlockData
         {
-            public NativeStream.BlockStreamData* Block;
-            public Allocator AllocatorLabel;
+            public const int AllocationSize = 4 * 1024;
+            public Allocator Allocator;
+
+            public UnsafeStreamBlock** Blocks;
+            public int BlockCount;
+
+            public UnsafeStreamRange* Ranges;
+            public int RangeCount;
         }
 
-        public static void Clear(this NativeStream stream)
+        public unsafe struct UnsafeStreamBlock
         {
-            if (!stream.IsCreated)
+            public UnsafeStreamBlock* Next;
+            public fixed byte Data[1];
+        }
+
+        public unsafe struct UnsafeStreamRange
+        {
+            public UnsafeStreamBlock* Block;
+            public int OffsetInFirstBlock;
+            public int ElementCount;
+
+            /// One byte past the end of the last byte written
+            public int LastOffset;
+            public int NumberOfBlocks;
+        }
+
+        public unsafe struct UnsafeStreamWriter
+        {
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeStreamBlockData* m_BlockStream;
+
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeStreamBlock* m_CurrentBlock;
+
+            [NativeDisableUnsafePtrRestriction]
+            public byte* m_CurrentPtr;
+
+            [NativeDisableUnsafePtrRestriction]
+            public byte* m_CurrentBlockEnd;
+
+            public int m_ForeachIndex;
+            public int m_ElementCount;
+
+            [NativeDisableUnsafePtrRestriction]
+            public UnsafeStreamBlock* m_FirstBlock;
+
+            public int m_FirstOffset;
+            public int m_NumberOfBlocks;
+
+            [NativeSetThreadIndex]
+            public int m_ThreadIndex;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void SetThreadIndex(this UnsafeStream.Writer writer, int threadIndex)
+        {
+            ((UnsafeStreamWriter*)&writer)->m_ThreadIndex = threadIndex;
+        }
+
+        public static void Clear(this UnsafeStream stream)
+        {
+            var blockData = *(UnsafeStreamBlockData**)&stream;
+            if (blockData == null)
                 return;
 
-            var streamHeader = (NativeStreamHeader*)UnsafeUtility.AddressOf(ref stream);
-            if ((IntPtr)streamHeader->Block == IntPtr.Zero)
-                return;
-
-            int blockCount = JobsUtility.MaxJobThreadCount;
-            var blocksSize = sizeof(NativeStream.Block*) * blockCount;
-
-            long forEachAllocationSize = sizeof(NativeStream.Range) * stream.ForEachCount;
-            UnsafeUtility.MemClear(streamHeader->Block->Ranges, forEachAllocationSize);
-
-            for (int index = 0; index != streamHeader->Block->BlockCount; ++index)
+            var blockSize = sizeof(UnsafeStreamBlock*) * blockData->BlockCount;
+            for (int index = 0; index != blockData->BlockCount; ++index)
             {
-                NativeStream.Block* next;
-                for (NativeStream.Block* blockPtr = streamHeader->Block->Blocks[index]; (IntPtr)blockPtr != IntPtr.Zero; blockPtr = next)
+                UnsafeStreamBlock* next;
+                for (UnsafeStreamBlock* blockPtr = blockData->Blocks[index]; (IntPtr)blockPtr != IntPtr.Zero; blockPtr = next)
                 {
                     next = blockPtr->Next;
-                    UnsafeUtility.MemClear(blockPtr, blocksSize);
+                    UnsafeUtility.MemClear(blockPtr, blockSize);
                 }
             }
+
+            for (int i = 0; i < blockData->RangeCount; i++)
+            {
+                UnsafeStreamRange range = blockData->Ranges[i];
+            }
+
+            long forEachAllocationSize = sizeof(UnsafeStreamRange) * stream.ForEachCount;
+            UnsafeUtility.MemClear(blockData->Ranges, forEachAllocationSize);
+        }
+
+        public static UnsafeStreamBlockData* GetUnsafePtr(this UnsafeStream stream)
+        {
+            return *(UnsafeStreamBlockData**)&stream;
         }
     }
 
-    public unsafe struct NativeStreamRotation
+    /// <summary>
+    /// An expansion upon UnsafeStream that allows multiple writes to the same ThreadIndex and
+    /// also tracks which thread indices have been used.
+    /// </summary>
+    public unsafe struct UnsafeSharedStream
     {
-        public NativeStream Current;
-        public NativeStream.Reader Reader;
-        public NativeStream Next;
-        public NativeStream Last;
-        public int Count;
-        public bool IsAllocated;
+        public UnsafeStream Stream;
+        public UnsafeStream.Writer* Writers;
+        public UnsafeList<int> Indices;
 
-        public NativeStreamRotation(int size, Allocator allocator) : this()
+        private int _size;
+        private Allocator _allocator;
+
+        public UnsafeSharedStream(int size, Allocator allocator)
         {
-            Allocate(size, allocator);
-        }
+            _size = size;
+            _allocator = allocator;
 
-        public void Allocate(int size, Allocator allocator)
-        {
-            if (IsAllocated)
-                return;
+            Writers = (UnsafeStream.Writer*)UnsafeUtility.Malloc(size * sizeof(UnsafeStream.Writer), UnsafeUtility.AlignOf<UnsafeStream.Writer>(), allocator);
+            Indices = new UnsafeList<int>(size, Allocator.Persistent);
+            Stream = new UnsafeStream(size, allocator);
 
-            Current = new NativeStream(size, allocator);
-            Next = new NativeStream(size, allocator);
-            Last = new NativeStream(size, allocator);
-            Reader = Current.AsReader();
-
-            // The DisposeSentinels will report leaks if there are no managed
-            // objects holding a reference to the streams stored inside SharedStatic<T>.
-            // This is a problem on the initial Editor start and during Edit->Play mode transition
-            // The whole thing is a bit of a disaster, and since this is an editor-only utility
-            // with only one allocation i'm just turning it off.
-
-#if ENABLE_UNITY_COLLECTIONS_CHECKS
-            Current.DisableSentinel();
-            Next.DisableSentinel();
-            Last.DisableSentinel();
-#endif
-            IsAllocated = true;
-        }
-
-        public int GetIndex()
-        {
-            return Interlocked.Increment(ref Count);
-        }
-
-        public void UseNext()
-        {
-            var last = Last;
-            Last = Current;
-            Next = last;
-            Next.Clear();
-            Count = 0;
-            Reader = Next.AsReader();
-            Current = Next;
+            Clear();
         }
 
         public void Clear()
         {
-            NativeDebugSharedData.Stream.Current.Clear();
-            NativeDebugSharedData.Stream.Count = 0;
+            UnsafeUtility.MemClear(Writers, _size * sizeof(UnsafeStream.Writer));
+            Indices.Clear();
+            Stream.Clear();
         }
 
-        public void Dispose()
+        public void Write<T>(int threadIndex, T value) where T : struct
         {
-            Next.Dispose();
-            Last.Dispose();
-            Current.Dispose();
-            IsAllocated = false;
+            if (!Indices.Contains(threadIndex))
+            {
+                var writer = Stream.AsWriter();
+
+                // UnsafeStream assumes writers are only being passed into a job
+                // so the thread index is set by the job system. DebugDrawer is not
+                // passed into a job so the ThreadIndex has to be set manually here.
+                writer.SetThreadIndex(threadIndex);
+
+                writer.BeginForEachIndex(threadIndex);
+                Writers[threadIndex] = writer;
+                Indices.AsParallelWriter().AddNoResize(threadIndex);
+            }
+
+            Writers[threadIndex].Write(value);
+        }
+
+        public void Close()
+        {
+            for (int i = 0; i < Indices.Length; i++)
+            {
+                var index = Indices.Ptr[i];
+                Writers[index].EndForEachIndex();
+            }
         }
     }
 
-    public static class SafetySystemExtensions
+    /// <summary>
+    /// A collection containing a ring of three streams. Allows streams to be constantly 
+    /// written to while periodically taking a slice/batch out to be processed.
+    /// </summary>
+    public unsafe struct UnsafeStreamRotation
     {
-        private static FieldInfo _safety;
-        private static FieldInfo _sentinel;
+        public UnsafeSharedStream Current;
+        public UnsafeSharedStream AvailableStream;
+        public UnsafeSharedStream ProcessingStream;
+        public bool IsCreated;
 
-        static SafetySystemExtensions()
+        public UnsafeStreamRotation(int size, Allocator allocator) : this()
         {
-            var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
-            _safety = typeof(NativeStream).GetField("m_Safety", flags);
-            _sentinel = typeof(NativeStream).GetField("m_DisposeSentinel", flags);
+            Allocate(size, allocator);
         }
 
-        public static void DisableSentinel(this NativeStream stream)
+        public void Clear()
         {
-            var sentinel1 = (DisposeSentinel)_sentinel.GetValue(stream);
-            DisposeSentinel.Clear(ref sentinel1);
+            Current.Clear();
+            AvailableStream.Clear();
+            ProcessingStream.Clear();
+        }
+
+        public void Allocate(int size, Allocator allocator)
+        {
+            if (IsCreated)
+                return;
+
+            Current = new UnsafeSharedStream(size, allocator);
+            AvailableStream = new UnsafeSharedStream(size, allocator);
+            ProcessingStream = new UnsafeSharedStream(size, allocator);
+            IsCreated = true;
+        }
+
+        /// <summary>
+        /// Switches out the current stream with a fresh/empty one, and the stream 
+        /// that was being written to becomes the 'Processing' stream.
+        /// </summary>
+        public void Rotate()
+        {
+            if (!IsCreated)
+                return;
+
+            var available = AvailableStream;
+            var processing = ProcessingStream;
+            var current = Current;
+
+            AvailableStream = processing;
+
+            available.Clear();
+            Current = available;
+
+            ProcessingStream = current;
+            ProcessingStream.Close();
         }
     }
+
+    #region UnityColors: Helper for Standard .Net colors in Unity format
 
     public static class UnityColors
     {
@@ -1536,5 +1801,7 @@ namespace Vella.Common
             return num4;
         }
     }
+
+    #endregion
 }
 
