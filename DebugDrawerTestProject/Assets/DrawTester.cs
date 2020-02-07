@@ -58,6 +58,9 @@ public class DrawTester : MonoBehaviour
         if (!Application.isPlaying && !DrawInEditMode)
             return;
 
+        if (NativeDebugSharedData.State.IsTransitioning)
+            return;
+
         if (Start == null || End == null)
             return;
 
@@ -171,11 +174,33 @@ public class DrawTester : MonoBehaviour
     private void OnEnable()
     {
         Hexagon = DebugTestShapes.GenerateHexagon();
+        CompilationPipeline.compilationStarted += OnCompilationStarted;
+        EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+    }
+
+    private void OnPlayModeStateChanged(PlayModeStateChange state)
+    {
+        switch (state)
+        {
+            case PlayModeStateChange.ExitingEditMode:
+            case PlayModeStateChange.ExitingPlayMode:
+                if (Hexagon.IsCreated)
+                    Hexagon.Dispose(_jobHandle);
+                break;
+        }
+                
+    }
+
+    private void OnCompilationStarted(object obj)
+    {
+        // Why OnDestroy() doesn't get called on recompilation i don't know.... 
+        Hexagon.Dispose(_jobHandle);
     }
 
     private void OnDestroy()
     {
-        Hexagon.Dispose(_jobHandle);
+        if(Hexagon.IsCreated)
+            Hexagon.Dispose(_jobHandle);
     }
 
     private static unsafe void DrawTests(int threadIndex, float3 start, float3 end, NativeString512 text, DebugTestDrawOptions methods, NativeArray<float3> polygon, int index = -1)
@@ -246,7 +271,7 @@ public class DrawTester : MonoBehaviour
 
         if (methods.Point)
             DebugDrawer.DrawPoint(threadIndex, center + (float3)Vector3.forward, UnityColors.Lavender, 0.25f);
-    }
+    } 
 }
 
 public static class DebugTestShapes

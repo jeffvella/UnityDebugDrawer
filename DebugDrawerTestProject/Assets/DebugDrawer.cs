@@ -207,28 +207,13 @@ namespace Vella.Common
                         // todo: investigate switching between Game/Scene view in play mode causing None drawings
                         break;
                     default:
-                        Debug.LogError($"The type {type} is not valid");
+                        //Debug.LogError($"The type {type} is not valid"); 
                         return;
                         //throw new ArgumentOutOfRangeException($"The type {type} is not valid");
                 }
             }
         }
 #endif
-
-
-
-        ///// <summary>
-        ///// Draw something custom in the scene view.
-        ///// </summary>
-        ///// <param name="drawing">instance of your IDebugDrawing implementation</param>
-        //[Conditional("UNITY_EDITOR"), MethodImpl(MethodImplOptions.AggressiveInlining)]
-        //public static void QueueDrawing<T>(T drawing) where T : struct, INativeDebuggable
-        //{
-        //    // ** method delibrately will not compile in burst job, use threadIndex overloads ** 
-        //    // You can use a "[NativeSetThreadIndex] public int ThreadIndex;" field to get it for Schedule()/Run() jobs.
-
-        //    QueueDrawing(Thread.CurrentThread.ManagedThreadId, drawing);
-        //}
 
         [Conditional("UNITY_EDITOR")]
         public static void QueueDrawing<T>(int threadIndex, T drawing) where T : struct, INativeDebuggable
@@ -239,27 +224,8 @@ namespace Vella.Common
             if (!NativeDebugSharedData.Stream.Current.Stream.IsCreated)
                 return;
 
-            //ref var writer = ref NativeDebugSharedData.Stream.Writer;
             NativeDebugSharedData.Stream.Current.Write(threadIndex, drawing);
-
-            //writer.BeginForEachIndex(threadIndex);
-            //writer.Write(drawing);
-            //writer.EndForEachIndex();
-
-            ref var time = ref NativeDebugSharedData.Time;
-            if (time.CurrentFrame > time.LastQueuedFrame)
-                time.LastQueuedFrame = time.CurrentFrame;
-        }
-
-        private static void CheckForFrameChange()
-        {
-            var currentFrame = NativeDebugSharedData.Time.CurrentFrame;
-            if (NativeDebugSharedData.Time.LastQueuedFrame != currentFrame)
-            {
-                NativeDebugSharedData.Time.Depth++;
-                NativeDebugSharedData.Stream.Rotate();
-                NativeDebugSharedData.Time.LastQueuedFrame = currentFrame;
-            }
+            NativeDebugSharedData.Time.LastQueuedFrame = NativeDebugSharedData.Time.CurrentFrame; 
         }
 
         /// <summary>
